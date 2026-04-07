@@ -38,6 +38,9 @@ alert_*.jpg
 # ── User-specific config (use config.example.yaml as template) ──────────────
 config.yaml
 
+# ── AI assistant context (local only) ───────────────────────────────────────
+GEMINI.md
+
 # ── Gradio ───────────────────────────────────────────────────────────────────
 .gradio/
 flagged/
