@@ -1,0 +1,17 @@
+[Unit]
+Description=Camera Server (WebSockets + H264/TCP Stream)
+After=network.target
+
+[Service]
+Type=simple
+User=olivier
+WorkingDirectory=/home/olivier
+ExecStart=/usr/bin/python /home/olivier/server.py
+Restart=always
+RestartSec=5
+# Ensure the entire process group (rpicam-vid child) is killed on stop
+KillMode=process-group
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
