@@ -1,0 +1,55 @@
+# =============================================================================
+# Camera-Client .gitignore
+# =============================================================================
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+venv/
+.venv/
+*.so
+
+# ── Secrets & credentials ───────────────────────────────────────────────────
+.secret.key
+email_config.json
+cert.pem
+key.pem
+
+# ── Model weights (large binary files — download separately) ────────────────
+*.pt
+*.engine
+*.onnx
+models/
+
+# ── Personal biometric data ─────────────────────────────────────────────────
+faces/
+animals/
+
+# ── Generated / runtime files ────────────────────────────────────────────────
+alert_*.jpg
+*.log
+
+# ── User-specific config (use config.example.yaml as template) ──────────────
+config.yaml
+
+# ── Gradio ───────────────────────────────────────────────────────────────────
+.gradio/
+flagged/
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+Desktop.ini

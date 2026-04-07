@@ -1,0 +1,67 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Camera-Client Configuration — Example
+# ──────────────────────────────────────────────────────────────────────────────
+# Copy this file to config.yaml and adjust values for your setup.
+#
+# Environment variable overrides:
+#   CAMERA__PI__HOST=10.0.0.50     →  pi.host = "10.0.0.50"
+#   CAMERA__AI__DEFAULT_MODEL=yolo26s.pt  →  ai.default_model = "yolo26s.pt"
+# ──────────────────────────────────────────────────────────────────────────────
+
+pi:
+  host: "192.168.1.XXX"          # Replace with your Pi's IP address
+  video_port: 8888
+  ws_port: 8889
+  default_resolution: [640, 480]
+  fps_min: 5
+  fps_max: 30
+  fps_default: 30
+
+server:
+  video_port: 8888
+  ws_port: 8889
+  default_width: 640
+  default_height: 480
+  default_fps: 30
+  default_bitrate: 2000000       # 2 Mbps
+  pid_file: "/tmp/camera_server.pid"
+
+ai:
+  default_model: "yolo26n.pt"
+  vlm_model_id: "google/gemma-4-E2B-it"
+  animal_embed_model: "facebook/dinov3-small"
+  face_threshold: 0.35
+  animal_threshold: 0.85
+  face_history_len: 5
+  animal_history_len: 5
+  detection_classes: [0, 15, 16]
+  iou_threshold: 0.4
+
+alerts:
+  cooldown_seconds: 300
+  alert_classes:
+    - { id: 0,  name: "person" }
+    - { id: 15, name: "cat" }
+    - { id: 16, name: "dog" }
+
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  timeout_seconds: 30
+
+stream:
+  jpeg_quality: 80
+
+ui:
+  server_host: "127.0.0.1"
+  server_port: 7860
+  share: true
+  log_max_lines: 20
+  log_refresh_interval: 1
+
+camera:
+  valid_resolutions:
+    - [640, 480]
+    - [1296, 972]
+    - [1920, 1080]
+    - [2592, 1944]

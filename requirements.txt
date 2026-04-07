@@ -1,0 +1,29 @@
+# Core
+gradio>=4.0
+opencv-python>=4.8
+numpy>=1.24
+Pillow>=10.0
+PyYAML>=6.0
+
+# AI / ML
+torch>=2.1
+ultralytics>=8.3.237
+transformers>=4.52
+accelerate>=0.30
+onnxruntime-gpu>=1.17
+
+# Communication
+websocket-client>=1.6
+websockets>=12.0
+
+# Security
+cryptography>=41.0
+
+# Email
+# (uses stdlib smtplib — no extra deps)
+
+# Platform-specific (Windows only)
+psutil>=5.9; sys_platform == "win32"
+
+# FastAPI (bundled with Gradio, but listed for clarity)
+fastapi>=0.100
