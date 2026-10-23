@@ -463,7 +463,7 @@ def ask_vlm(message: str, history: list) -> str:
         frame_rgb = cv2.cvtColor(state.last_frame, cv2.COLOR_BGR2RGB)
 
     pil_img = Image.fromarray(frame_rgb)
-    return ai.describe_scene(pil_img, message)
+    return ai.describe_scene(pil_img, message, history=history)
 
 
 # ── UI callbacks ─────────────────────────────────────────────────────────────

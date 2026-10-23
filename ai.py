@@ -44,10 +44,11 @@ class AIProcessor:
         self.segment_model_name: str = cfg.ai.default_model
         self.model_type: str = "yolo"
         self.sam3_prompts: list[str] = ["person", "cat", "dog"]
-        self._sam3_last_inference: float = 0.0
-        self._sam3_cached_frame: Optional[np.ndarray] = None
-        self._sam3_cached_status: str = "SAM3 loading..."
-        self._sam3_interval: float = 0.0
+        self._loader_error: Optional[str] = None
+
+        # Guards every use/swap of segment_model (inference threads vs.
+        # model switching vs. VLM-driven release)
+        self._infer_lock = threading.RLock()
 
         # Tracking state
         self.tracking_enabled: bool = False
@@ -61,6 +62,10 @@ class AIProcessor:
         self.learning_count: int = 0
         self.learning_max: int = 5
         self.face_history: dict[int, deque] = {}
+        self._frame_no: int = 0
+        # track_id -> (frame_no, label, color): re-identify only every
+        # cfg.ai.face_recheck_interval frames per track
+        self._face_cache: dict[int, tuple[int, str, tuple[int, int, int]]] = {}
 
         # Animal recognition
         self.animal_recognition_enabled: bool = False
@@ -70,11 +75,13 @@ class AIProcessor:
         self.animal_learning_count: int = 0
         self.animal_learning_max: int = 5
         self.animal_history: dict[int, deque] = {}
+        self._animal_cache: dict[int, tuple[int, str, tuple[int, int, int]]] = {}
 
         # VLM (Gemma4-E2B)
         self._vlm_model = None
         self._vlm_processor = None
         self._vlm_lock = threading.Lock()
+        self._vlm_gen_lock = threading.Lock()
 
         # Start background loader
         threading.Thread(
@@ -88,8 +95,15 @@ class AIProcessor:
         log.info("Background loader: importing PyTorch & Ultralytics...")
         global torch, YOLO, SAM
 
-        import torch as _torch
-        from ultralytics import YOLO as _YOLO, SAM as _SAM
+        try:
+            import torch as _torch
+            from ultralytics import YOLO as _YOLO, SAM as _SAM
+        except Exception as e:
+            self._loader_error = (
+                f"Failed to import AI libraries (torch/ultralytics): {e}"
+            )
+            log.error(self._loader_error)
+            return
 
         torch = _torch
         YOLO = _YOLO
@@ -111,8 +125,13 @@ class AIProcessor:
         """Load a YOLO or SAM model by name and task type."""
         if YOLO is None:
             log.info("Waiting for libraries to load...")
-            while YOLO is None:
+            deadline = time.time() + 120
+            while YOLO is None and self._loader_error is None:
+                if time.time() > deadline:
+                    return "❌ AI libraries are taking too long to load — check logs"
                 time.sleep(0.5)
+            if self._loader_error:
+                return f"❌ {self._loader_error}"
 
         log.info("Loading model: %s (%s)...", model_name, task_type)
         try:
@@ -159,43 +178,42 @@ class AIProcessor:
 
             self.segment_model_name = target_name
 
-            # Check cache
-            if target_name in self.loaded_models:
-                log.info("Using cached model: %s", target_name)
-                self.segment_model = self.loaded_models[target_name]
-                self.model_type = (
-                    "sam3"
-                    if target_name.lower() == "sam3.pt"
-                    else "sam" if "sam" in target_name.lower() else "yolo"
-                )
-                return f"Loaded Cached {target_name}"
+            with self._infer_lock:
+                # Check cache
+                if target_name in self.loaded_models:
+                    log.info("Using cached model: %s", target_name)
+                    self.segment_model = self.loaded_models[target_name]
+                    self.model_type = (
+                        "sam3"
+                        if target_name.lower() == "sam3.pt"
+                        else "sam" if "sam" in target_name.lower() else "yolo"
+                    )
+                    return f"Loaded Cached {target_name}"
 
-            if target_name.lower() == "sam3.pt":
-                from ultralytics.models.sam import SAM3SemanticPredictor
+                if target_name.lower() == "sam3.pt":
+                    from ultralytics.models.sam import SAM3SemanticPredictor
 
-                self.segment_model = SAM3SemanticPredictor(
-                    overrides={
-                        "conf": 0.25,
-                        "task": "segment",
-                        "mode": "predict",
-                        "model": target_name,
-                        "imgsz": 644,
-                        "device": self.device,
-                        "save": False,
-                        "verbose": False,
-                    }
-                )
-                self.model_type = "sam3"
-                self._sam3_last_inference = 0.0
-                self._sam3_cached_frame = None
-            elif "sam" in target_name.lower():
-                self.segment_model = SAM(target_name)
-                self.model_type = "sam"
-            else:
-                self.segment_model = YOLO(target_name)
-                self.model_type = "yolo"
+                    self.segment_model = SAM3SemanticPredictor(
+                        overrides={
+                            "conf": 0.25,
+                            "task": "segment",
+                            "mode": "predict",
+                            "model": target_name,
+                            "imgsz": 644,
+                            "device": self.device,
+                            "save": False,
+                            "verbose": False,
+                        }
+                    )
+                    self.model_type = "sam3"
+                elif "sam" in target_name.lower():
+                    self.segment_model = SAM(target_name)
+                    self.model_type = "sam"
+                else:
+                    self.segment_model = YOLO(target_name)
+                    self.model_type = "yolo"
 
-            self.loaded_models[target_name] = self.segment_model
+                self._cache_model(target_name, self.segment_model)
             log.info("Model %s loaded successfully", target_name)
             return f"Loaded {target_name}"
 
@@ -203,13 +221,28 @@ class AIProcessor:
             log.error("Model load error: %s", e)
             return str(e)
 
+    def _cache_model(self, name: str, model) -> None:
+        """Cache a loaded model, evicting oldest entries to bound VRAM."""
+        self.loaded_models[name] = model
+        max_n = max(1, cfg.ai.max_cached_models)
+        while len(self.loaded_models) > max_n:
+            evictable = [
+                k for k in self.loaded_models if k != self.segment_model_name
+            ]
+            if not evictable:
+                break
+            oldest = evictable[0]
+            log.info("Evicting cached model to free memory: %s", oldest)
+            del self.loaded_models[oldest]
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     def set_sam3_prompts(self, prompt_text: str) -> str:
         """Update SAM3 concept prompts from a comma-separated UI value."""
         prompts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         if not prompts:
             return "❌ Enter at least one SAM3 concept, e.g. person, cat, dog"
         self.sam3_prompts = prompts
-        self._sam3_last_inference = 0.0
         return f"SAM3 concepts: {', '.join(prompts)}"
 
     def set_tracker(self, tracker_name: str) -> None:
@@ -221,6 +254,8 @@ class AIProcessor:
         """Export current .pt model to TensorRT .engine format."""
         if not self.segment_model or not self.segment_model_name.endswith(".pt"):
             return "❌ Load a PyTorch (.pt) model first!"
+        if self.device != "cuda":
+            return "❌ TensorRT export requires a CUDA GPU"
 
         try:
             log.info("Starting TensorRT export for %s...", self.segment_model_name)
@@ -420,38 +455,54 @@ class AIProcessor:
         box: np.ndarray,
         track_id: Optional[int],
     ) -> tuple[str, tuple[int, int, int]]:
-        """Identify a person via face recognition with temporal smoothing."""
+        """Identify a person via face recognition with temporal smoothing.
+
+        Results are cached per track id and refreshed only every
+        ``cfg.ai.face_recheck_interval`` frames to keep the frame rate up.
+        """
+        if track_id is not None:
+            hit = self._face_cache.get(track_id)
+            if (
+                hit is not None
+                and self._frame_no - hit[0] < max(1, cfg.ai.face_recheck_interval)
+            ):
+                return hit[1], hit[2]
+
         x1, y1, x2, y2 = box
         fr = self._get_face_recognizer()
         fr_ready = fr is not None and fr.is_ready()
 
         if not fr_ready:
             tid_str = f"#{track_id}" if track_id is not None else ""
-            return f"Person {tid_str}", (255, 140, 0)
+            label, color = f"Person {tid_str}", (255, 140, 0)
+        else:
+            name, conf = fr.identify(frame_bgr, (x1, y1, x2, y2))
+            final_name = name
 
-        name, conf = fr.identify(frame_bgr, (x1, y1, x2, y2))
-        final_name = name
+            # Temporal smoothing via majority vote
+            if track_id is not None:
+                if track_id not in self.face_history:
+                    self.face_history[track_id] = deque(
+                        maxlen=cfg.ai.face_history_len
+                    )
+                self.face_history[track_id].append(name)
 
-        # Temporal smoothing via majority vote
+                history = list(self.face_history[track_id])
+                if history:
+                    counts = {n: history.count(n) for n in set(history)}
+                    most_common = max(counts, key=counts.get)
+                    if counts[most_common] >= len(history) / 2:
+                        final_name = most_common
+
+            if final_name != "Unknown":
+                label, color = f"{final_name} ({conf:.2f})", (0, 255, 0)
+            else:
+                tid_str = f"#{track_id}" if track_id is not None else ""
+                label, color = f"Person {tid_str}", (255, 140, 0)
+
         if track_id is not None:
-            if track_id not in self.face_history:
-                self.face_history[track_id] = deque(
-                    maxlen=cfg.ai.face_history_len
-                )
-            self.face_history[track_id].append(name)
-
-            history = list(self.face_history[track_id])
-            if history:
-                counts = {n: history.count(n) for n in set(history)}
-                most_common = max(counts, key=counts.get)
-                if counts[most_common] >= len(history) / 2:
-                    final_name = most_common
-
-        if final_name != "Unknown":
-            return f"{final_name} ({conf:.2f})", (0, 255, 0)
-
-        tid_str = f"#{track_id}" if track_id is not None else ""
-        return f"Person {tid_str}", (255, 140, 0)
+            self._face_cache[track_id] = (self._frame_no, label, color)
+        return label, color
 
     def _resolve_animal_label(
         self,
@@ -462,38 +513,54 @@ class AIProcessor:
         class_name: str,
         track_id: Optional[int],
     ) -> tuple[str, tuple[int, int, int]]:
-        """Identify an animal via DINOv3 with temporal smoothing."""
+        """Identify an animal via DINOv3 with temporal smoothing.
+
+        Results are cached per track id and refreshed only every
+        ``cfg.ai.animal_recheck_interval`` frames to keep the frame rate up.
+        """
+        if track_id is not None:
+            hit = self._animal_cache.get(track_id)
+            if (
+                hit is not None
+                and self._frame_no - hit[0] < max(1, cfg.ai.animal_recheck_interval)
+            ):
+                return hit[1], hit[2]
+
         ar = self._get_animal_recognizer()
         ar_ready = ar is not None and ar.is_ready()
 
         if not ar_ready:
             tid_str = f"#{track_id}" if track_id is not None else ""
-            return f"{class_name} {tid_str}", (255, 100, 100)
+            label, color = f"{class_name} {tid_str}", (255, 100, 100)
+        else:
+            crop = self._extract_animal_crop(frame_bgr, box, masks, mask_index)
+            name, conf = ar.identify(crop)
+            final_name = name
 
-        crop = self._extract_animal_crop(frame_bgr, box, masks, mask_index)
-        name, conf = ar.identify(crop)
-        final_name = name
+            # Temporal smoothing
+            if track_id is not None:
+                if track_id not in self.animal_history:
+                    self.animal_history[track_id] = deque(
+                        maxlen=cfg.ai.animal_history_len
+                    )
+                self.animal_history[track_id].append(name)
 
-        # Temporal smoothing
+                history = list(self.animal_history[track_id])
+                if history:
+                    counts = {n: history.count(n) for n in set(history)}
+                    most_common = max(counts, key=counts.get)
+                    if counts[most_common] >= len(history) / 2:
+                        final_name = most_common
+
+            if final_name != "Unknown":
+                label, color = f"{final_name} ({conf:.2f})", (150, 0, 200)
+            else:
+                tid_str = f"#{track_id}" if track_id is not None else ""
+                label, color = f"{class_name} {tid_str}", (150, 100, 200)
+
         if track_id is not None:
-            if track_id not in self.animal_history:
-                self.animal_history[track_id] = deque(
-                    maxlen=cfg.ai.animal_history_len
-                )
-            self.animal_history[track_id].append(name)
-
-            history = list(self.animal_history[track_id])
-            if history:
-                counts = {n: history.count(n) for n in set(history)}
-                most_common = max(counts, key=counts.get)
-                if counts[most_common] >= len(history) / 2:
-                    final_name = most_common
-
-        if final_name != "Unknown":
-            return f"{final_name} ({conf:.2f})", (150, 0, 200)
-
-        tid_str = f"#{track_id}" if track_id is not None else ""
-        return f"{class_name} {tid_str}", (150, 100, 200)
+            self._animal_cache[track_id] = (self._frame_no, label, color)
+        return label, color
 
     def _draw_recognition_overlays(
         self,
@@ -511,22 +578,25 @@ class AIProcessor:
         names_dict = results[0].names
         masks = results[0].masks
 
-        # Clean stale track history
+        # Clean stale track history and identification caches
         if track_ids:
             current_ids = set(track_ids)
-            for history_dict in (self.face_history, self.animal_history):
-                stale = [tid for tid in history_dict if tid not in current_ids]
+            for per_track in (
+                self.face_history, self.animal_history,
+                self._face_cache, self._animal_cache,
+            ):
+                stale = [tid for tid in per_track if tid not in current_ids]
                 for tid in stale:
-                    del history_dict[tid]
+                    del per_track[tid]
 
         for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy)):
             x1, y1, x2, y2 = box
             class_name = names_dict.get(cls_id, str(cls_id))
             tid = track_ids[i] if (track_ids and i < len(track_ids)) else None
 
-            if cls_id == 0 and self.face_recognition_enabled:
+            if cls_id == cfg.ai.person_class and self.face_recognition_enabled:
                 label, color = self._resolve_person_label(frame_bgr, box, tid)
-            elif cls_id in [15, 16] and self.animal_recognition_enabled:
+            elif cls_id in cfg.ai.animal_classes and self.animal_recognition_enabled:
                 label, color = self._resolve_animal_label(
                     frame_bgr, box, masks, i, class_name, tid
                 )
@@ -551,7 +621,7 @@ class AIProcessor:
             largest_box = None
             max_area = 0
             for cls_id, box in zip(classes, boxes_xyxy):
-                if cls_id == 0:
+                if cls_id == cfg.ai.person_class:
                     x1, y1, x2, y2 = box
                     area = (x2 - x1) * (y2 - y1)
                     if area > max_area:
@@ -580,7 +650,7 @@ class AIProcessor:
             max_area = 0
             best_index = -1
             for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy)):
-                if cls_id in [15, 16]:
+                if cls_id in cfg.ai.animal_classes:
                     x1, y1, x2, y2 = box
                     area = (x2 - x1) * (y2 - y1)
                     if area > max_area:
@@ -614,8 +684,10 @@ class AIProcessor:
         if not self.segment_model:
             return frame_bgr, "Model Loading...", []
 
-        start = time.time()
+        self._infer_lock.acquire()
         try:
+            self._frame_no += 1
+            start = time.time()
             if self.model_type == "yolo":
                 use_half = self.device == "cuda" and not self._is_engine_model()
 
@@ -657,13 +729,6 @@ class AIProcessor:
                 # Run SAM3 on every received frame. If processing is slower
                 # than the camera feed, the AI loop naturally uses the newest
                 # available frame rather than queueing stale work.
-                now = time.time()
-                if (
-                    self._sam3_cached_frame is not None
-                    and now - self._sam3_last_inference < self._sam3_interval
-                ):
-                    return self._sam3_cached_frame.copy(), self._sam3_cached_status, []
-
                 self.segment_model.set_image(frame_bgr)
                 results = self.segment_model(text=self.sam3_prompts)
                 result = results[0]
@@ -671,13 +736,12 @@ class AIProcessor:
                 count = len(result)
                 fps = 1.0 / (time.time() - start)
                 h, w = frame_bgr.shape[:2]
-                self._sam3_last_inference = now
-                self._sam3_cached_frame = annotated_frame.copy()
-                self._sam3_cached_status = (
+                return (
+                    annotated_frame,
                     f"Res: {w}x{h} | SAM3: {count} | "
-                    f"FPS: {fps:.1f} ({self.device})"
+                    f"FPS: {fps:.1f} ({self.device})",
+                    [],
                 )
-                return annotated_frame, self._sam3_cached_status, []
 
             elif self.model_type == "sam":
                 results = self.segment_model(
@@ -698,6 +762,8 @@ class AIProcessor:
         except Exception as e:
             log.error("Inference error: %s", e)
             return frame_bgr, f"Error: {e}", []
+        finally:
+            self._infer_lock.release()
 
     def track_frame(
         self, frame_bgr: np.ndarray, conf: float = 0.5
@@ -713,8 +779,10 @@ class AIProcessor:
             result = self.process_frame(frame_bgr, conf)
             return (*result, [])
 
-        start = time.time()
+        self._infer_lock.acquire()
         try:
+            self._frame_no += 1
+            start = time.time()
             use_half = self.device == "cuda" and not self._is_engine_model()
 
             results = self.segment_model.track(
@@ -764,13 +832,24 @@ class AIProcessor:
         except Exception as e:
             log.error("Tracking error: %s", e)
             return frame_bgr, f"Tracking Error: {e}", [], []
+        finally:
+            self._infer_lock.release()
 
     # ── VLM (Gemma4-E2B) ────────────────────────────────────────────────────
 
     def describe_scene(
-        self, frame_pil: Image.Image, prompt: str = ""
+        self,
+        frame_pil: Image.Image,
+        prompt: str = "",
+        history: Optional[list] = None,
     ) -> str:
         """Describe the current frame using the Gemma4-E2B VLM.
+
+        Args:
+            frame_pil: current frame as a PIL image (RGB).
+            prompt: question or instruction for the model.
+            history: optional prior chat messages (``{"role", "content"}``
+                dicts, text only) used as conversation context.
 
         Lazily loads Gemma in 4-bit NF4 precision. The E2B model has 5.1B
         total parameters (including embeddings), so generic ``device_map``
@@ -789,12 +868,15 @@ class AIProcessor:
                     # SAM3 and Gemma cannot comfortably coexist at full
                     # precision on an 8 GB GPU. Release SAM3 before loading
                     # the assistant; selecting it again reloads it on demand.
+                    # The inference lock keeps the AI loop from using the
+                    # model while it is being torn down.
                     if self.model_type == "sam3":
                         log.info("Releasing SAM3 GPU memory for the VLM")
-                        self.loaded_models.pop(self.segment_model_name, None)
-                        self.segment_model = None
-                        self.segment_model_name = ""
-                        self.model_type = "none"
+                        with self._infer_lock:
+                            self.loaded_models.pop(self.segment_model_name, None)
+                            self.segment_model = None
+                            self.segment_model_name = ""
+                            self.model_type = "none"
                         if torch is not None and torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
@@ -825,13 +907,26 @@ class AIProcessor:
                     return f"Failed to load VLM: {e}"
 
         try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        ""
-                    ),
-                },
+            messages: list[dict] = []
+            for h in history or []:
+                role = h.get("role")
+                content = h.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    )
+                if role == "user":
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": str(content)}],
+                        }
+                    )
+                elif role == "assistant":
+                    messages.append({"role": "assistant", "content": str(content)})
+            messages.append(
                 {
                     "role": "user",
                     "content": [
@@ -839,25 +934,27 @@ class AIProcessor:
                         {"type": "text", "text": prompt},
                     ],
                 }
-            ]
-            inputs = self._vlm_processor.apply_chat_template(
-                messages,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                add_generation_prompt=True,
-            ).to(self._vlm_model.device)
-            input_len = inputs["input_ids"].shape[-1]
-            with torch.inference_mode():
-                output_ids = self._vlm_model.generate(
-                    **inputs,
-                    max_new_tokens=1024,
-                    do_sample=False,
-                    repetition_penalty=1.08,
-                )
-            response = self._vlm_processor.decode(
-                output_ids[0][input_len:], skip_special_tokens=False
             )
+            # One generation at a time: chat and alert threads serialize here
+            with self._vlm_gen_lock:
+                inputs = self._vlm_processor.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                    add_generation_prompt=True,
+                ).to(self._vlm_model.device)
+                input_len = inputs["input_ids"].shape[-1]
+                with torch.inference_mode():
+                    output_ids = self._vlm_model.generate(
+                        **inputs,
+                        max_new_tokens=1024,
+                        do_sample=False,
+                        repetition_penalty=1.08,
+                    )
+                response = self._vlm_processor.decode(
+                    output_ids[0][input_len:], skip_special_tokens=False
+                )
             parsed = self._vlm_processor.parse_response(response)
             if isinstance(parsed, str):
                 return parsed
