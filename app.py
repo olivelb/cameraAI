@@ -365,9 +365,6 @@ def read_stream() -> None:
             connect()
 
 
-threading.Thread(target=read_stream, daemon=True, name="stream-reader").start()
-
-
 # ── AI processing thread ────────────────────────────────────────────────────
 
 def ai_loop() -> None:
@@ -418,7 +415,21 @@ def ai_loop() -> None:
             time.sleep(0.1)
 
 
-threading.Thread(target=ai_loop, daemon=True, name="ai-loop").start()
+_threads_started = False
+
+
+def start_background_threads() -> None:
+    """Start the capture and AI worker threads (idempotent).
+
+    Called from the main entry point so that merely importing this module
+    (tests, tooling) never opens sockets or spawns workers.
+    """
+    global _threads_started
+    if _threads_started:
+        return
+    _threads_started = True
+    threading.Thread(target=read_stream, daemon=True, name="stream-reader").start()
+    threading.Thread(target=ai_loop, daemon=True, name="ai-loop").start()
 
 
 # ── MJPEG stream generator ──────────────────────────────────────────────────
@@ -831,6 +842,7 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
 
 if __name__ == "__main__":
     cleanup_port(cfg.ui.server_port)
+    start_background_threads()
 
     # Get local IP for display
     try:
