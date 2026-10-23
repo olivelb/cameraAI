@@ -150,16 +150,6 @@ class Settings:
 
 # ── Loader ────────────────────────────────────────────────────────────────────
 
-def _deep_update(base: dict, override: dict) -> dict:
-    """Recursively merge override into base."""
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_update(base[key], value)
-        else:
-            base[key] = value
-    return base
-
-
 def _apply_env_overrides(data: dict, prefix: str = "CAMERA") -> dict:
     """
     Apply environment variable overrides.
@@ -185,33 +175,6 @@ def _apply_env_overrides(data: dict, prefix: str = "CAMERA") -> dict:
         else:
             target[final_key] = env_val
     return data
-
-
-def _populate_dataclass(cls: type, data: dict) -> Any:
-    """Create a dataclass instance from a dict, handling nested dataclasses."""
-    import dataclasses
-    if not dataclasses.is_dataclass(cls):
-        return data
-
-    kwargs = {}
-    for f in dataclasses.fields(cls):
-        if f.name in data:
-            val = data[f.name]
-            if dataclasses.is_dataclass(f.type) if isinstance(f.type, type) else False:
-                kwargs[f.name] = _populate_dataclass(f.type, val)
-            elif isinstance(val, dict) and hasattr(f.default_factory if callable(getattr(f, 'default_factory', None)) else None, '__call__'):
-                # Try to build nested dataclass from type hint
-                try:
-                    field_type = f.type if isinstance(f.type, type) else eval(f.type)
-                    if dataclasses.is_dataclass(field_type):
-                        kwargs[f.name] = _populate_dataclass(field_type, val)
-                    else:
-                        kwargs[f.name] = val
-                except Exception:
-                    kwargs[f.name] = val
-            else:
-                kwargs[f.name] = val
-    return cls(**kwargs)
 
 
 def load_settings() -> Settings:
