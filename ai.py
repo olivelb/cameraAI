@@ -43,6 +43,11 @@ class AIProcessor:
         self.segment_model = None
         self.segment_model_name: str = cfg.ai.default_model
         self.model_type: str = "yolo"
+        self.sam3_prompts: list[str] = ["person", "cat", "dog"]
+        self._sam3_last_inference: float = 0.0
+        self._sam3_cached_frame: Optional[np.ndarray] = None
+        self._sam3_cached_status: str = "SAM3 loading..."
+        self._sam3_interval: float = 0.0
 
         # Tracking state
         self.tracking_enabled: bool = False
@@ -67,7 +72,8 @@ class AIProcessor:
         self.animal_history: dict[int, deque] = {}
 
         # VLM (Gemma4-E2B)
-        self._vlm_pipeline = None
+        self._vlm_model = None
+        self._vlm_processor = None
         self._vlm_lock = threading.Lock()
 
         # Start background loader
@@ -100,7 +106,7 @@ class AIProcessor:
     # ── Model management ─────────────────────────────────────────────────────
 
     def load_segmentation_model(
-        self, model_name: str, task_type: str = "Detection"
+        self, model_name: str, task_type: str = "Detection", sam3_prompt: str = ""
     ) -> str:
         """Load a YOLO or SAM model by name and task type."""
         if YOLO is None:
@@ -110,21 +116,44 @@ class AIProcessor:
 
         log.info("Loading model: %s (%s)...", model_name, task_type)
         try:
-            base_name = (
-                model_name.replace(".pt", "")
-                .replace(".engine", "")
-                .replace("-seg", "")
-            )
-            ext = ".engine" if model_name.endswith(".engine") else ".pt"
+            if sam3_prompt.strip():
+                self.set_sam3_prompts(sam3_prompt)
 
-            if task_type == "Segmentation":
-                target_name = f"{base_name}-seg{ext}"
+            # SAM models use their own checkpoint names (for example
+            # ``sam3.pt``).  Unlike YOLO, they must not be rewritten to a
+            # ``-seg`` variant when the UI task toggle changes.
+            is_sam_model = "sam" in model_name.lower()
+            if is_sam_model:
+                target_name = model_name
             else:
-                target_name = f"{base_name}{ext}"
+                base_name = (
+                    model_name.replace(".pt", "")
+                    .replace(".engine", "")
+                    .replace("-seg", "")
+                )
+                ext = ".engine" if model_name.endswith(".engine") else ".pt"
+                target_name = (
+                    f"{base_name}-seg{ext}"
+                    if task_type == "Segmentation"
+                    else f"{base_name}{ext}"
+                )
+
+            if is_sam_model and not os.path.isfile(target_name):
+                message = (
+                    f"SAM checkpoint not found: {target_name}. "
+                    "Select the installed SAM 2 Tiny model or place the "
+                    "SAM 3 checkpoint in the project root."
+                )
+                log.error(message)
+                return f"❌ {message}"
 
             # Prefer TensorRT engine if available
             engine_name = target_name.replace(".pt", ".engine")
-            if target_name.endswith(".pt") and os.path.exists(engine_name):
+            if (
+                not is_sam_model
+                and target_name.endswith(".pt")
+                and os.path.exists(engine_name)
+            ):
                 log.info("Found TensorRT engine: %s — using it instead", engine_name)
                 target_name = engine_name
 
@@ -134,10 +163,32 @@ class AIProcessor:
             if target_name in self.loaded_models:
                 log.info("Using cached model: %s", target_name)
                 self.segment_model = self.loaded_models[target_name]
-                self.model_type = "sam" if "sam" in target_name.lower() else "yolo"
+                self.model_type = (
+                    "sam3"
+                    if target_name.lower() == "sam3.pt"
+                    else "sam" if "sam" in target_name.lower() else "yolo"
+                )
                 return f"Loaded Cached {target_name}"
 
-            if "sam" in target_name.lower():
+            if target_name.lower() == "sam3.pt":
+                from ultralytics.models.sam import SAM3SemanticPredictor
+
+                self.segment_model = SAM3SemanticPredictor(
+                    overrides={
+                        "conf": 0.25,
+                        "task": "segment",
+                        "mode": "predict",
+                        "model": target_name,
+                        "imgsz": 644,
+                        "device": self.device,
+                        "save": False,
+                        "verbose": False,
+                    }
+                )
+                self.model_type = "sam3"
+                self._sam3_last_inference = 0.0
+                self._sam3_cached_frame = None
+            elif "sam" in target_name.lower():
                 self.segment_model = SAM(target_name)
                 self.model_type = "sam"
             else:
@@ -151,6 +202,15 @@ class AIProcessor:
         except Exception as e:
             log.error("Model load error: %s", e)
             return str(e)
+
+    def set_sam3_prompts(self, prompt_text: str) -> str:
+        """Update SAM3 concept prompts from a comma-separated UI value."""
+        prompts = [part.strip() for part in prompt_text.split(",") if part.strip()]
+        if not prompts:
+            return "❌ Enter at least one SAM3 concept, e.g. person, cat, dog"
+        self.sam3_prompts = prompts
+        self._sam3_last_inference = 0.0
+        return f"SAM3 concepts: {', '.join(prompts)}"
 
     def set_tracker(self, tracker_name: str) -> None:
         """Set the active tracker (botsort or bytetrack)."""
@@ -593,6 +653,32 @@ class AIProcessor:
                     detected_classes,
                 )
 
+            elif self.model_type == "sam3":
+                # Run SAM3 on every received frame. If processing is slower
+                # than the camera feed, the AI loop naturally uses the newest
+                # available frame rather than queueing stale work.
+                now = time.time()
+                if (
+                    self._sam3_cached_frame is not None
+                    and now - self._sam3_last_inference < self._sam3_interval
+                ):
+                    return self._sam3_cached_frame.copy(), self._sam3_cached_status, []
+
+                self.segment_model.set_image(frame_bgr)
+                results = self.segment_model(text=self.sam3_prompts)
+                result = results[0]
+                annotated_frame = result.plot()
+                count = len(result)
+                fps = 1.0 / (time.time() - start)
+                h, w = frame_bgr.shape[:2]
+                self._sam3_last_inference = now
+                self._sam3_cached_frame = annotated_frame.copy()
+                self._sam3_cached_status = (
+                    f"Res: {w}x{h} | SAM3: {count} | "
+                    f"FPS: {fps:.1f} ({self.device})"
+                )
+                return annotated_frame, self._sam3_cached_status, []
+
             elif self.model_type == "sam":
                 results = self.segment_model(
                     frame_bgr, verbose=False, device=self.device
@@ -682,32 +768,70 @@ class AIProcessor:
     # ── VLM (Gemma4-E2B) ────────────────────────────────────────────────────
 
     def describe_scene(
-        self, frame_pil: Image.Image, prompt: str = "Describe this image concisely."
+        self, frame_pil: Image.Image, prompt: str = ""
     ) -> str:
         """Describe the current frame using the Gemma4-E2B VLM.
 
-        Lazily loads the model on first call using the transformers
-        ``pipeline("any-to-any", ...)`` API.
+        Lazily loads Gemma in 4-bit NF4 precision. The E2B model has 5.1B
+        total parameters (including embeddings), so generic ``device_map``
+        loading in BF16 spills it across both VRAM and system RAM.
         """
         with self._vlm_lock:
-            if self._vlm_pipeline is None:
+            if self._vlm_model is None:
                 log.info("Loading VLM (%s)...", cfg.ai.vlm_model_id)
                 try:
-                    from transformers import pipeline as hf_pipeline
+                    from transformers import (
+                        AutoModelForMultimodalLM,
+                        AutoProcessor,
+                        BitsAndBytesConfig,
+                    )
 
-                    self._vlm_pipeline = hf_pipeline(
-                        task="any-to-any",
-                        model=cfg.ai.vlm_model_id,
-                        device_map="auto",
-                        torch_dtype="auto",
+                    # SAM3 and Gemma cannot comfortably coexist at full
+                    # precision on an 8 GB GPU. Release SAM3 before loading
+                    # the assistant; selecting it again reloads it on demand.
+                    if self.model_type == "sam3":
+                        log.info("Releasing SAM3 GPU memory for the VLM")
+                        self.loaded_models.pop(self.segment_model_name, None)
+                        self.segment_model = None
+                        self.segment_model_name = ""
+                        self.model_type = "none"
+                        if torch is not None and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                    )
+                    self._vlm_processor = AutoProcessor.from_pretrained(
+                        cfg.ai.vlm_model_id
+                    )
+                    self._vlm_model = AutoModelForMultimodalLM.from_pretrained(
+                        cfg.ai.vlm_model_id,
+                        quantization_config=quantization_config,
+                        # ``auto`` offloads part of Gemma E2B to RAM despite
+                        # the 4-bit model fitting on the 8 GB 4070. Force a
+                        # single-GPU placement to avoid the huge RAM spike and
+                        # very slow CPU/GPU transfers.
+                        device_map={"": 0},
+                        dtype=torch.bfloat16,
+                        low_cpu_mem_usage=True,
                     )
                     log.info("VLM loaded successfully")
                 except Exception as e:
+                    self._vlm_model = None
+                    self._vlm_processor = None
                     log.error("Failed to load VLM: %s", e)
                     return f"Failed to load VLM: {e}"
 
         try:
             messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        ""
+                    ),
+                },
                 {
                     "role": "user",
                     "content": [
@@ -716,30 +840,50 @@ class AIProcessor:
                     ],
                 }
             ]
-            output = self._vlm_pipeline(messages, max_new_tokens=256)
-            # Extract the generated text from pipeline output
-            if isinstance(output, list) and len(output) > 0:
-                result = output[0]
-                if isinstance(result, dict) and "generated_text" in result:
-                    generated = result["generated_text"]
-                    # The generated_text may include the full conversation;
-                    # extract only the assistant's reply
-                    if isinstance(generated, list):
-                        for msg in reversed(generated):
-                            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                                content = msg.get("content", "")
-                                if isinstance(content, str):
-                                    return content
-                                if isinstance(content, list):
-                                    return " ".join(
-                                        c.get("text", "")
-                                        for c in content
-                                        if isinstance(c, dict) and c.get("type") == "text"
-                                    )
-                    elif isinstance(generated, str):
-                        return generated
-                return str(output)
-            return "No response from VLM"
+            inputs = self._vlm_processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=True,
+            ).to(self._vlm_model.device)
+            input_len = inputs["input_ids"].shape[-1]
+            with torch.inference_mode():
+                output_ids = self._vlm_model.generate(
+                    **inputs,
+                    max_new_tokens=1024,
+                    do_sample=False,
+                    repetition_penalty=1.08,
+                )
+            response = self._vlm_processor.decode(
+                output_ids[0][input_len:], skip_special_tokens=False
+            )
+            parsed = self._vlm_processor.parse_response(response)
+            if isinstance(parsed, str):
+                return parsed
+            if isinstance(parsed, dict):
+                content = parsed.get("content", "")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    return " ".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    )
+            if isinstance(parsed, list):
+                for message in reversed(parsed):
+                    if isinstance(message, dict) and message.get("role") == "assistant":
+                        content = message.get("content", "")
+                        if isinstance(content, str):
+                            return content
+                        if isinstance(content, list):
+                            return " ".join(
+                                part.get("text", "")
+                                for part in content
+                                if isinstance(part, dict) and part.get("type") == "text"
+                            )
+            return str(parsed)
         except Exception as e:
             log.error("VLM error: %s", e)
             return f"VLM Error: {e}"

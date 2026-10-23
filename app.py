@@ -266,9 +266,14 @@ def toggle_email_state(enabled: bool) -> None:
     ui_log(f"🔔 Alerts set to: {enabled}")
 
 
-def change_model_logic(model_name: str, task_mode: str) -> str:
-    """Switch the active YOLO model and task type."""
-    return ai.load_segmentation_model(model_name, task_mode)
+def change_model_logic(model_name: str, task_mode: str, sam3_prompt: str) -> str:
+    """Switch the active YOLO/SAM model and task type."""
+    return ai.load_segmentation_model(model_name, task_mode, sam3_prompt)
+
+
+def update_sam3_prompt_logic(prompt: str) -> str:
+    """Update the concepts SAM3 should locate and segment."""
+    return ai.set_sam3_prompts(prompt)
 
 
 # ── Shared state ─────────────────────────────────────────────────────────────
@@ -613,12 +618,19 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
                         "yolo26n.pt", "yolo26s.pt", "yolo26m.pt",
                         "yolo26l.pt", "yolo26x.pt",
                         "yolo11n.pt", "yolo11s.pt", "yolov8n.pt",
+                        "sam2_t.pt",
+                        "sam3.pt",
                     ],
                     value=cfg.ai.default_model,
                     label="Model",
                     scale=3,
                 )
                 optimize_btn = gr.Button("⚡ Optimize (TRT)", scale=1)
+            sam3_prompt = gr.Textbox(
+                value="person, cat, dog",
+                label="SAM3 concepts (comma-separated)",
+                info="Used only by sam3.pt; analyzes every processed frame.",
+            )
 
             gr.Markdown("### 🎯 Tracking")
             with gr.Row():
@@ -748,11 +760,16 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
     )
     email_enable.change(toggle_email_state, inputs=email_enable)
     model_dropdown.change(
-        change_model_logic, inputs=[model_dropdown, task_mode], outputs=info_output
+        change_model_logic,
+        inputs=[model_dropdown, task_mode, sam3_prompt],
+        outputs=info_output,
     )
     task_mode.change(
-        change_model_logic, inputs=[model_dropdown, task_mode], outputs=info_output
+        change_model_logic,
+        inputs=[model_dropdown, task_mode, sam3_prompt],
+        outputs=info_output,
     )
+    sam3_prompt.change(update_sam3_prompt_logic, inputs=sam3_prompt, outputs=info_output)
     optimize_btn.click(ai.export_to_tensorrt, inputs=[], outputs=info_output)
     tracking_toggle.change(toggle_tracking, inputs=tracking_toggle)
     tracker_dropdown.change(change_tracker, inputs=tracker_dropdown)
