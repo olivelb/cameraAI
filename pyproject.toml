@@ -1,0 +1,18 @@
+[project]
+name = "camera-client"
+description = "AI smart camera: detection, tracking, face/animal recognition over a Pi stream"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "B", "UP", "S"]
+# E501: long lines handled by line-length above where practical
+# S607: rpicam-vid / taskkill are resolved from PATH by design
+# S108: /tmp is the conventional pid-file location on the Pi
+ignore = ["E501", "S607", "S108"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
