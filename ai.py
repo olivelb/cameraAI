@@ -16,7 +16,6 @@ import os
 import threading
 import time
 from collections import deque
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -44,7 +43,7 @@ class AIProcessor:
         self.segment_model_name: str = cfg.ai.default_model
         self.model_type: str = "yolo"
         self.sam3_prompts: list[str] = ["person", "cat", "dog"]
-        self._loader_error: Optional[str] = None
+        self._loader_error: str | None = None
 
         # Guards every use/swap of segment_model (inference threads vs.
         # model switching vs. VLM-driven release)
@@ -453,7 +452,7 @@ class AIProcessor:
         self,
         frame_bgr: np.ndarray,
         box: np.ndarray,
-        track_id: Optional[int],
+        track_id: int | None,
     ) -> tuple[str, tuple[int, int, int]]:
         """Identify a person via face recognition with temporal smoothing.
 
@@ -511,7 +510,7 @@ class AIProcessor:
         masks,
         mask_index: int,
         class_name: str,
-        track_id: Optional[int],
+        track_id: int | None,
     ) -> tuple[str, tuple[int, int, int]]:
         """Identify an animal via DINOv3 with temporal smoothing.
 
@@ -589,7 +588,7 @@ class AIProcessor:
                 for tid in stale:
                     del per_track[tid]
 
-        for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy)):
+        for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy, strict=False)):
             x1, y1, x2, y2 = box
             class_name = names_dict.get(cls_id, str(cls_id))
             tid = track_ids[i] if (track_ids and i < len(track_ids)) else None
@@ -620,7 +619,7 @@ class AIProcessor:
         if self.learning_count > 0:
             largest_box = None
             max_area = 0
-            for cls_id, box in zip(classes, boxes_xyxy):
+            for cls_id, box in zip(classes, boxes_xyxy, strict=False):
                 if cls_id == cfg.ai.person_class:
                     x1, y1, x2, y2 = box
                     area = (x2 - x1) * (y2 - y1)
@@ -649,7 +648,7 @@ class AIProcessor:
             largest_box = None
             max_area = 0
             best_index = -1
-            for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy)):
+            for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy, strict=False)):
                 if cls_id in cfg.ai.animal_classes:
                     x1, y1, x2, y2 = box
                     area = (x2 - x1) * (y2 - y1)
@@ -841,7 +840,7 @@ class AIProcessor:
         self,
         frame_pil: Image.Image,
         prompt: str = "",
-        history: Optional[list] = None,
+        history: list | None = None,
     ) -> str:
         """Describe the current frame using the Gemma4-E2B VLM.
 

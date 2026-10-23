@@ -10,9 +10,14 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["F", "E", "W", "B", "UP", "S"]
 # E501: long lines handled by line-length above where practical
+# S603: subprocess calls use static argv lists (taskkill/netstat/rpicam-vid)
 # S607: rpicam-vid / taskkill are resolved from PATH by design
 # S108: /tmp is the conventional pid-file location on the Pi
-ignore = ["E501", "S607", "S108"]
+ignore = ["E501", "S603", "S607", "S108"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests legitimately use assert
+"tests/*" = ["S101"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

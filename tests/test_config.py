@@ -1,7 +1,5 @@
 """Unit tests for config.py (no heavy dependencies required)."""
 
-import os
-
 import pytest
 
 import config

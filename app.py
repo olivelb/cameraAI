@@ -14,7 +14,6 @@ import os
 import socket
 import threading
 import time
-from typing import Optional
 
 import cv2
 import gradio as gr
@@ -100,7 +99,7 @@ email_config: dict = {
 
 if os.path.exists(_CONFIG_FILE):
     try:
-        with open(_CONFIG_FILE, "r") as f:
+        with open(_CONFIG_FILE) as f:
             data = json.load(f)
             email_config.update(data)
             # Always start with alerts disabled for safety
@@ -295,8 +294,8 @@ class AppState:
 
     def __init__(self) -> None:
         self.conf: float = 0.5
-        self.last_frame: Optional[np.ndarray] = None
-        self.last_processed: Optional[np.ndarray] = None
+        self.last_frame: np.ndarray | None = None
+        self.last_processed: np.ndarray | None = None
         self.lock = threading.Lock()
         self.last_res: tuple[int, int] = (0, 0)
         self.frame_id: int = 0
@@ -316,7 +315,7 @@ def read_stream() -> None:
     Only active when cam_source_mode == 'pi'; sleeps otherwise.
     Auto-reconnects on stream loss.
     """
-    cap: Optional[cv2.VideoCapture] = None
+    cap: cv2.VideoCapture | None = None
     fail_count = 0
 
     def connect() -> cv2.VideoCapture:

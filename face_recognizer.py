@@ -24,7 +24,6 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -55,7 +54,7 @@ def _download_and_extract(url: str, dest_dir: Path) -> None:
     zip_path = dest_dir / "buffalo_l.zip"
 
     log.info("Downloading models from %s...", url)
-    urllib.request.urlretrieve(url, zip_path)
+    urllib.request.urlretrieve(url, zip_path)  # noqa: S310 — fixed HTTPS release URL
     log.info("Downloaded %s (%d MB)", zip_path.name, zip_path.stat().st_size // 1024 // 1024)
 
     log.info("Extracting models...")
@@ -173,7 +172,7 @@ _REC_INPUT_SIZE = (112, 112)
 
 def _align_face(
     img_bgr: np.ndarray, x1: int, y1: int, x2: int, y2: int
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """Crop and resize face region to 112×112 for ArcFace."""
     h, w = img_bgr.shape[:2]
     x1, y1 = max(0, x1), max(0, y1)
@@ -222,8 +221,8 @@ class FaceRecognizer:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._det_sess: Optional[ort.InferenceSession] = None
-        self._rec_sess: Optional[ort.InferenceSession] = None
+        self._det_sess: ort.InferenceSession | None = None
+        self._rec_sess: ort.InferenceSession | None = None
         self._gallery: dict[str, np.ndarray] = {}
         self.enabled: bool = False
         self.threshold: float = cfg.ai.face_threshold
@@ -250,7 +249,7 @@ class FaceRecognizer:
 
     # ── Gallery management ───────────────────────────────────────────────────
 
-    def build_gallery(self, faces_dir: Optional[Path] = None) -> str:
+    def build_gallery(self, faces_dir: Path | None = None) -> str:
         """Scan faces/<name>/ subfolders, compute mean ArcFace embedding per person.
 
         Saves result to faces/gallery.npz for fast startup.
@@ -406,7 +405,7 @@ class FaceRecognizer:
         ]
 
         flat = []
-        for i, o in enumerate(outputs):
+        for o in outputs:
             if hasattr(o, "numpy"):
                 o = o.numpy()
             if o.ndim == 3:
@@ -423,7 +422,7 @@ class FaceRecognizer:
         emb /= np.linalg.norm(emb) + 1e-8
         return emb
 
-    def _embed_best_face(self, img_bgr: np.ndarray) -> Optional[np.ndarray]:
+    def _embed_best_face(self, img_bgr: np.ndarray) -> np.ndarray | None:
         """Detect the largest face in img_bgr and return its embedding."""
         faces = self._detect_faces(img_bgr)
         if not faces:

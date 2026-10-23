@@ -18,7 +18,6 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -89,7 +88,7 @@ class AnimalRecognizer:
         """Check if the model is loaded and ready for inference."""
         return self.extractor is not None
 
-    def _embed(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
+    def _embed(self, image_bgr: np.ndarray) -> np.ndarray | None:
         """Compute a normalized embedding for an animal crop."""
         if not self.is_ready() or image_bgr.size == 0:
             return None

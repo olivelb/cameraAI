@@ -182,7 +182,7 @@ def load_settings() -> Settings:
     config_path = _CONFIG_FILE if _CONFIG_FILE.exists() else _EXAMPLE_FILE
 
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         log.info("Loaded config from %s", config_path.name)
     else:

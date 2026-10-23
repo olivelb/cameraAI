@@ -13,7 +13,6 @@ import threading
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
 
 from config import cfg
 
@@ -35,7 +34,7 @@ class EmailNotifier:
         receiver_email: str,
         subject: str,
         body: str,
-        image_data: Optional[bytes] = None,
+        image_data: bytes | None = None,
         image_name: str = "alert.jpg",
     ) -> None:
         """Send an email in a background thread (fire-and-forget).
@@ -67,7 +66,7 @@ class EmailNotifier:
         receiver_email: str,
         subject: str,
         body: str,
-        image_data: Optional[bytes] = None,
+        image_data: bytes | None = None,
         image_name: str = "alert.jpg",
     ) -> None:
         """Compose and send the email inline; raise on failure."""

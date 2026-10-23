@@ -332,7 +332,8 @@ async def main() -> None:
     log.info("WebSocket control server listening on 0.0.0.0:%d", _WS_PORT)
     log.info("Video stream (H.264/TCP) available on port %d", _VIDEO_PORT)
 
-    async with websockets.serve(handle_client, "0.0.0.0", _WS_PORT):
+    # Bind all interfaces: the Pi must be reachable from LAN/Tailscale clients
+    async with websockets.serve(handle_client, "0.0.0.0", _WS_PORT):  # noqa: S104
         await asyncio.Future()
 
 
