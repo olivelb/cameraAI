@@ -62,6 +62,13 @@ def get_logs() -> str:
         return "\n".join(_UI_LOGS[::-1])
 
 
+def get_logs_and_status() -> tuple[str, str]:
+    """Return (logs, current AI status) for the periodic UI refresh."""
+    with state.lock:
+        info = state.last_info
+    return get_logs(), info
+
+
 # ── Camera source state ──────────────────────────────────────────────────────
 cam_source_mode: str = "pi"
 
@@ -145,7 +152,7 @@ def send_test_email() -> str:
 
     ui_log(f"Sending test email from {email_config['sender']}...")
     try:
-        notifier.send_email(
+        notifier.send_email_sync(
             email_config["sender"],
             email_config["password"],
             email_config["receiver"],
@@ -172,7 +179,7 @@ class AlertManager:
         }
         self.cooldown: int = cfg.alerts.cooldown_seconds
 
-    def check(self, detected_classes: list[int], frame_rgb: np.ndarray) -> None:
+    def check(self, detected_classes: list[int], frame_bgr: np.ndarray) -> None:
         """Check if any detected class should trigger an alert."""
         if not email_config["enabled"] or not email_config["sender"]:
             return
@@ -181,22 +188,20 @@ class AlertManager:
         for cls_id, name in self._alert_classes:
             if cls_id in detected_classes:
                 if now - self.last_alert[name] > self.cooldown:
-                    self._trigger(name, frame_rgb)
+                    self._trigger(name, frame_bgr)
 
-    def _trigger(self, name: str, frame_rgb: np.ndarray) -> None:
+    def _trigger(self, name: str, frame_bgr: np.ndarray) -> None:
         """Send an alert in a background thread."""
         ui_log(f"Triggering {name} alert (cooldown refreshed)")
         self.last_alert[name] = time.time()
         threading.Thread(
-            target=self._process_alert, args=(name, frame_rgb), daemon=True
+            target=self._process_alert, args=(name, frame_bgr.copy()), daemon=True
         ).start()
 
-    def _process_alert(self, name: str, frame_rgb: np.ndarray) -> None:
+    def _process_alert(self, name: str, frame_bgr: np.ndarray) -> None:
         """Encode image, get AI description, and send email."""
         try:
-            success, buffer = cv2.imencode(
-                ".jpg", cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            )
+            success, buffer = cv2.imencode(".jpg", frame_bgr)
             if not success:
                 ui_log("Failed to encode alert image")
                 return
@@ -204,7 +209,7 @@ class AlertManager:
             img_bytes = buffer.tobytes()
             img_name = f"alert_{name}_{int(time.time())}.jpg"
 
-            pil_img = Image.fromarray(frame_rgb)
+            pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
             desc = ai.describe_scene(
                 pil_img, f"Describe the {name} in this image concisely."
             )
@@ -296,6 +301,7 @@ class AppState:
         self.last_res: tuple[int, int] = (0, 0)
         self.frame_id: int = 0
         self.processed_id: int = -1
+        self.last_info: str = "Model loading..."
 
 
 state = AppState()
@@ -405,6 +411,7 @@ def ai_loop() -> None:
 
             with state.lock:
                 state.last_processed = processed
+                state.last_info = info
                 state.processed_id = current_id
 
         except Exception as e:
@@ -587,6 +594,9 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
                 "</div>",
                 label="Live AI Feed",
             )
+            ai_status_output = gr.Textbox(
+                label="AI Status", interactive=False, autoscroll=False
+            )
 
         with gr.Column(scale=1):
             gr.Markdown("### 🎛️ Controls")
@@ -751,7 +761,9 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
             gr.Markdown("### 📜 System Logs")
             log_output = gr.Textbox(label="Console Output", lines=5, interactive=False)
             log_timer = gr.Timer(cfg.ui.log_refresh_interval)
-            log_timer.tick(get_logs, outputs=log_output)
+            log_timer.tick(
+                get_logs_and_status, outputs=[log_output, ai_status_output]
+            )
 
             gr.Markdown("### 💬 Vision Assistant")
             chat = gr.ChatInterface(fn=ask_vlm, type="messages")

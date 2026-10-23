@@ -149,9 +149,9 @@ def _decode_det(
     scores = np.concatenate(scores_list)
     boxes = np.concatenate(boxes_list)
 
-    keep = cv2.dnn.NMSBoxes(
-        boxes[:, :4].tolist(), scores.tolist(), score_thresh, nms_thresh
-    )
+    # cv2.dnn.NMSBoxes expects [x, y, w, h] rectangles, not x1y1x2y2 corners
+    rects = np.column_stack([boxes[:, :2], boxes[:, 2:] - boxes[:, :2]]).tolist()
+    keep = cv2.dnn.NMSBoxes(rects, scores.tolist(), score_thresh, nms_thresh)
     if len(keep) == 0:
         return []
 
@@ -311,12 +311,14 @@ class FaceRecognizer:
         person_dir = FACES_DIR / name
         person_dir.mkdir(parents=True, exist_ok=True)
 
+        # Timestamped names so repeated additions never overwrite existing photos
+        base_ts = int(time.time() * 1000)
         saved = 0
         for i, path in enumerate(image_paths):
             img = cv2.imread(path)
             if img is None:
                 continue
-            dest = person_dir / f"photo_{i:03d}{Path(path).suffix}"
+            dest = person_dir / f"photo_{base_ts}_{i:03d}{Path(path).suffix}"
             cv2.imwrite(str(dest), img)
             saved += 1
 

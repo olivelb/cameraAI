@@ -38,9 +38,13 @@ class EmailNotifier:
         image_data: Optional[bytes] = None,
         image_name: str = "alert.jpg",
     ) -> None:
-        """Send an email with an optional image attachment in a background thread."""
+        """Send an email in a background thread (fire-and-forget).
+
+        Errors are logged but not raised. Use :meth:`send_email_sync`
+        when delivery failures must reach the caller.
+        """
         thread = threading.Thread(
-            target=self._send_email_thread,
+            target=self._send_email_logged,
             args=(
                 sender_email, sender_password, receiver_email,
                 subject, body, image_data, image_name,
@@ -49,35 +53,39 @@ class EmailNotifier:
         )
         thread.start()
 
-    def _send_email_thread(
+    def _send_email_logged(self, *args, **kwargs) -> None:
+        """Thread wrapper: send and log failures instead of raising."""
+        try:
+            self.send_email_sync(*args, **kwargs)
+        except Exception as e:
+            log.error("Failed to send email: %s", e)
+
+    def send_email_sync(
         self,
         sender_email: str,
         sender_password: str,
         receiver_email: str,
         subject: str,
         body: str,
-        image_data: Optional[bytes],
-        image_name: str,
+        image_data: Optional[bytes] = None,
+        image_name: str = "alert.jpg",
     ) -> None:
-        """Internal: compose and send the email."""
-        try:
-            msg = MIMEMultipart()
-            msg["From"] = sender_email
-            msg["To"] = receiver_email
-            msg["Subject"] = subject
-            msg.attach(MIMEText(body, "plain"))
+        """Compose and send the email inline; raise on failure."""
+        msg = MIMEMultipart()
+        msg["From"] = sender_email
+        msg["To"] = receiver_email
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
 
-            if image_data:
-                image = MIMEImage(image_data, name=image_name)
-                msg.attach(image)
+        if image_data:
+            image = MIMEImage(image_data, name=image_name)
+            msg.attach(image)
 
-            with smtplib.SMTP(
-                self.smtp_server, self.smtp_port, timeout=self.timeout
-            ) as server:
-                server.starttls()
-                server.login(sender_email, sender_password)
-                server.send_message(msg)
+        with smtplib.SMTP(
+            self.smtp_server, self.smtp_port, timeout=self.timeout
+        ) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
 
-            log.info("Email sent successfully to %s", receiver_email)
-        except Exception as e:
-            log.error("Failed to send email: %s", e)
+        log.info("Email sent successfully to %s", receiver_email)
