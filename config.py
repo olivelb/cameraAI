@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import os
 import logging
+import math
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -156,25 +158,102 @@ def _apply_env_overrides(data: dict, prefix: str = "CAMERA") -> dict:
 
     CAMERA__PI__HOST=192.0.2.30  →  data["pi"]["host"] = "192.0.2.30"
     """
+    section_types = get_type_hints(Settings)
     for env_key, env_val in os.environ.items():
         if not env_key.startswith(f"{prefix}__"):
             continue
         parts = env_key[len(prefix) + 2:].lower().split("__")
-        target = data
-        for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        # Try to preserve type
-        final_key = parts[-1]
-        existing = target.get(final_key)
-        if isinstance(existing, bool):
-            target[final_key] = env_val.lower() in ("1", "true", "yes")
-        elif isinstance(existing, int):
-            target[final_key] = int(env_val)
-        elif isinstance(existing, float):
-            target[final_key] = float(env_val)
-        else:
-            target[final_key] = env_val
+        if len(parts) != 2 or parts[0] not in section_types:
+            raise ValueError(f"Unknown configuration override: {env_key}")
+        section, key = parts
+        hints = get_type_hints(section_types[section])
+        if key not in hints:
+            raise ValueError(f"Unknown configuration override: {env_key}")
+        target = data.setdefault(section, {})
+        if not isinstance(target, dict):
+            raise ValueError(f"Configuration section {section} must be a mapping")
+        kind = hints[key]
+        try:
+            if kind is str:
+                value = env_val  # Secrets and numeric hostnames stay strings.
+            elif kind is bool:
+                choices = {"true": True, "1": True, "yes": True,
+                           "false": False, "0": False, "no": False}
+                value = choices[env_val.strip().lower()]
+            elif kind in (int, float):
+                value = kind(env_val)
+            else:
+                value = yaml.safe_load(env_val)
+        except (ValueError, KeyError, yaml.YAMLError):
+            raise ValueError(f"Invalid value for {section}.{key}") from None
+        target[key] = value
     return data
+
+
+def _matches_type(value: Any, expected: Any) -> bool:
+    origin = get_origin(expected)
+    args = get_args(expected)
+    if expected is Any:
+        return True
+    if origin is list:
+        return isinstance(value, list) and all(_matches_type(v, args[0]) for v in value)
+    if origin is dict:
+        return isinstance(value, dict) and all(
+            _matches_type(k, args[0]) and _matches_type(v, args[1])
+            for k, v in value.items()
+        )
+    if origin is types.UnionType:
+        return any(_matches_type(value, kind) for kind in args)
+    if expected is float:
+        return type(value) in (int, float) and math.isfinite(value)
+    return type(value) is expected
+
+
+def validate_settings(settings: Settings) -> None:
+    """Reject invalid types/ranges before they reach sockets, threads or models."""
+    for section in Settings.__dataclass_fields__:
+        values = getattr(settings, section)
+        for key, kind in get_type_hints(type(values)).items():
+            value = getattr(values, key)
+            if not _matches_type(value, kind):
+                raise ValueError(f"Invalid type for {section}.{key}")
+            path = f"{section}.{key}"
+            if key.endswith("port") and not 1 <= value <= 65535:
+                raise ValueError(f"{path} must be between 1 and 65535")
+            if type(value) in (int, float) and key not in ("person_class",) and value <= 0:
+                raise ValueError(f"{path} must be positive")
+    for key in ("face_threshold", "animal_threshold", "iou_threshold"):
+        if not 0 < getattr(settings.ai, key) <= 1:
+            raise ValueError(f"ai.{key} must be in (0, 1]")
+    if not 1 <= settings.stream.jpeg_quality <= 100:
+        raise ValueError("stream.jpeg_quality must be in [1, 100]")
+    if not 1 <= settings.pi.fps_min <= settings.pi.fps_default <= settings.pi.fps_max <= 30:
+        raise ValueError("pi FPS must satisfy 1 <= min <= default <= max <= 30")
+    if not 1 <= settings.server.default_fps <= 30:
+        raise ValueError("server.default_fps must be in [1, 30]")
+    if not 100_000 <= settings.server.default_bitrate <= 25_000_000:
+        raise ValueError("server.default_bitrate must be in [100000, 25000000]")
+    resolutions = settings.camera.valid_resolutions
+    if not resolutions or any(len(r) != 2 or any(v <= 0 for v in r) for r in resolutions):
+        raise ValueError("camera.valid_resolutions must contain positive [width, height] pairs")
+    valid = settings.camera.valid_resolution_set()
+    if tuple(settings.pi.default_resolution) not in valid:
+        raise ValueError("pi.default_resolution is not in camera.valid_resolutions")
+    if (settings.server.default_width, settings.server.default_height) not in valid:
+        raise ValueError("Server default resolution is not in camera.valid_resolutions")
+    if settings.server.video_port == settings.server.ws_port:
+        raise ValueError("Server video and WebSocket ports must differ")
+    ids = settings.ai.detection_classes + settings.ai.animal_classes + [settings.ai.person_class]
+    if any(v < 0 for v in ids):
+        raise ValueError("AI class IDs must be nonnegative")
+    for entry in settings.alerts.alert_classes:
+        if (set(entry) != {"id", "name"} or type(entry["id"]) is not int
+                or entry["id"] < 0 or not isinstance(entry["name"], str) or not entry["name"]):
+            raise ValueError("alerts.alert_classes must contain {id: nonnegative int, name: string}")
+    if bool(settings.ui.auth_username) != bool(settings.ui.auth_password):
+        raise ValueError("Set both ui.auth_username and ui.auth_password")
+    if settings.ui.share and not settings.ui.auth_username:
+        raise ValueError("Public sharing requires ui.auth_username and ui.auth_password")
 
 
 def load_settings() -> Settings:
@@ -183,33 +262,31 @@ def load_settings() -> Settings:
 
     if config_path.exists():
         with open(config_path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
+            raw = yaml.safe_load(f)
+            if raw is None:
+                raw = {}
         log.info("Loaded config from %s", config_path.name)
     else:
         log.warning("No config file found — using defaults")
         raw = {}
 
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration root must be a mapping")
     raw = _apply_env_overrides(raw)
 
     # Build typed Settings
     settings = Settings()
-    if "pi" in raw:
-        settings.pi = PiSettings(**{k: v for k, v in raw["pi"].items() if k in PiSettings.__dataclass_fields__})
-    if "server" in raw:
-        settings.server = ServerSettings(**{k: v for k, v in raw["server"].items() if k in ServerSettings.__dataclass_fields__})
-    if "ai" in raw:
-        settings.ai = AISettings(**{k: v for k, v in raw["ai"].items() if k in AISettings.__dataclass_fields__})
-    if "alerts" in raw:
-        settings.alerts = AlertSettings(**{k: v for k, v in raw["alerts"].items() if k in AlertSettings.__dataclass_fields__})
-    if "email" in raw:
-        settings.email = EmailSettings(**{k: v for k, v in raw["email"].items() if k in EmailSettings.__dataclass_fields__})
-    if "stream" in raw:
-        settings.stream = StreamSettings(**{k: v for k, v in raw["stream"].items() if k in StreamSettings.__dataclass_fields__})
-    if "ui" in raw:
-        settings.ui = UISettings(**{k: v for k, v in raw["ui"].items() if k in UISettings.__dataclass_fields__})
-    if "camera" in raw:
-        settings.camera = CameraSettings(**{k: v for k, v in raw["camera"].items() if k in CameraSettings.__dataclass_fields__})
-
+    sections = get_type_hints(Settings)
+    for section, values in raw.items():
+        if section not in sections:
+            raise ValueError(f"Unknown configuration section: {section}")
+        kind = sections[section]
+        if not isinstance(values, dict):
+            raise ValueError(f"Configuration section {section} must be a mapping")
+        if any(k not in kind.__dataclass_fields__ for k in values):
+            raise ValueError(f"Unknown configuration key in {section}")
+        setattr(settings, section, kind(**values))
+    validate_settings(settings)
     return settings
 
 

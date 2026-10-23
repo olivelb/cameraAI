@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
+import socket
 import sys
-import time
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ def apply_windows_boost() -> None:
     """Apply Windows 11 anti-EcoQoS / anti-throttling optimizations.
 
     - Forces 1ms timer resolution
-    - Sets REALTIME priority class
+    - Sets ABOVE_NORMAL priority class
     - Prevents thread-to-E-core shunting
     - Prevents display/system sleep
     """
@@ -36,9 +35,9 @@ def apply_windows_boost() -> None:
         # 1. Force extreme timer resolution
         ctypes.windll.winmm.timeBeginPeriod(1)
 
-        # 2. REALTIME priority
+        # 2. Avoid REALTIME: inference must not starve input or system services.
         p = psutil.Process(os.getpid())
-        p.nice(psutil.REALTIME_PRIORITY_CLASS)
+        p.nice(psutil.ABOVE_NORMAL_PRIORITY_CLASS)
 
         # 3. Prevent display/system sleep
         ctypes.windll.kernel32.SetThreadExecutionState(
@@ -93,47 +92,13 @@ def _listening_pids(netstat_output: str, port: int, own_pid: int) -> list[str]:
 
 
 def cleanup_port(port: int) -> None:
-    """Kill stale listeners holding a port (Windows only).
-
-    Used to reclaim port 7860 on startup when a previous instance
-    didn't shut down cleanly. Only processes actually LISTENING on the
-    exact port are targeted — never the current process, never clients
-    with established connections.
-    """
-    if sys.platform != "win32":
-        return
-
-    log.info("Checking for stale listeners on port %d...", port)
+    """Refuse an occupied port without terminating unrelated processes."""
     try:
-        # Kill stray Gradio tunnel binaries
-        subprocess.run(
-            ["taskkill", "/IM", "frpc_windows_amd64_v0.3.exe", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-        # Find processes listening on the port and kill them
-        result = subprocess.run(
-            ["netstat", "-ano"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout
-
-        pids = _listening_pids(result, port, os.getpid())
-        if not pids:
-            return
-
-        for pid in pids:
-            log.warning("Killing stale listener (PID %s) on port %d", pid, port)
-            subprocess.run(
-                ["taskkill", "/F", "/PID", pid],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-        time.sleep(1)  # Let OS release the port
-    except FileNotFoundError:
-        pass  # netstat/taskkill unavailable — nothing to clean
-    except Exception as e:
-        log.debug("Port cleanup error: %s", e)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            if sys.platform == "win32":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            probe.bind(("127.0.0.1", port))
+    except OSError as e:
+        raise RuntimeError(
+            f"Port {port} is unavailable. Stop its owner or change ui.server_port."
+        ) from e

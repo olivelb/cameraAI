@@ -24,6 +24,7 @@ import sys
 import threading as _threading
 
 import websockets
+from config import cfg
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -34,74 +35,48 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────────
-# Import config only if available (server may run on Pi without full deps)
-try:
-    from config import cfg
-
-    _VIDEO_PORT = cfg.server.video_port
-    _WS_PORT = cfg.server.ws_port
-    _PID_FILE = cfg.server.pid_file
-    _AUTH_TOKEN = cfg.server.auth_token
-    _DEFAULT_SETTINGS = {
-        "width": cfg.server.default_width,
-        "height": cfg.server.default_height,
-        "fps": cfg.server.default_fps,
-        "bitrate": cfg.server.default_bitrate,
-    }
-    _VALID_RESOLUTIONS = cfg.camera.valid_resolution_set()
-except ImportError:
-    log.warning("config.py not found — using built-in defaults")
-    _VIDEO_PORT = 8888
-    _WS_PORT = 8889
-    _PID_FILE = "/tmp/camera_server.pid"
-    _AUTH_TOKEN = ""
-    _DEFAULT_SETTINGS = {
-        "width": 640,
-        "height": 480,
-        "fps": 30,
-        "bitrate": 2_000_000,
-    }
-    _VALID_RESOLUTIONS = {
-        (640, 480),
-        (1296, 972),
-        (1920, 1080),
-        (2592, 1944),
-    }
+_VIDEO_PORT = cfg.server.video_port
+_WS_PORT = cfg.server.ws_port
+_PID_FILE = cfg.server.pid_file
+_AUTH_TOKEN = cfg.server.auth_token
+_DEFAULT_SETTINGS = {
+    "width": cfg.server.default_width,
+    "height": cfg.server.default_height,
+    "fps": cfg.server.default_fps,
+    "bitrate": cfg.server.default_bitrate,
+}
+_VALID_RESOLUTIONS = cfg.camera.valid_resolution_set()
 
 
 # ── PID file — prevents duplicate instances ──────────────────────────────────
 
-def acquire_pid_lock() -> None:
-    """Write our PID to the lock file. Exit if another instance is running."""
-    if os.path.exists(_PID_FILE):
-        try:
-            with open(_PID_FILE) as f:
-                old_pid = int(f.read().strip())
-            os.kill(old_pid, 0)
-            log.error(
-                "Another server instance is already running (PID %d). Exiting.",
-                old_pid,
-            )
-            sys.exit(1)
-        except (ProcessLookupError, ValueError):
-            log.warning("Stale PID file found. Cleaning up.")
-        except PermissionError:
-            log.error(
-                "PID file references a process owned by another user — "
-                "refusing to start a second instance. Exiting."
-            )
-            sys.exit(1)
+_pid_lock_fd: int | None = None
 
-    with open(_PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
+
+def acquire_pid_lock() -> None:
+    """Hold a Linux advisory lock for this process's complete lifetime."""
+    import fcntl
+
+    global _pid_lock_fd
+    if _pid_lock_fd is not None:
+        raise RuntimeError("PID lock already acquired")
+    fd = os.open(_PID_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+    except BaseException:
+        os.close(fd)
+        raise
+    _pid_lock_fd = fd
 
 
 def release_pid_lock() -> None:
-    """Remove the PID lock file."""
-    try:
-        os.remove(_PID_FILE)
-    except FileNotFoundError:
-        pass
+    """Release only our lock. Keep the inode to avoid unlink/reacquire races."""
+    global _pid_lock_fd
+    if _pid_lock_fd is not None:
+        os.close(_pid_lock_fd)
+        _pid_lock_fd = None
 
 
 # ── Stream settings ──────────────────────────────────────────────────────────
@@ -155,12 +130,18 @@ def build_rpicam_cmd() -> list[str]:
 
 
 def _kill_process(proc: subprocess.Popen) -> None:
-    """Kill a process group, ignoring errors."""
+    """Terminate our child session, escalating if it ignores SIGTERM."""
+    if proc.poll() is not None:
+        return
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=3)
+    except ProcessLookupError:
         proc.wait(timeout=3)
-    except Exception as e:
-        log.debug("Kill process: %s", e)
 
 
 def _watchdog() -> None:
@@ -193,11 +174,12 @@ def _watchdog() -> None:
                     settings["fps"],
                     settings["bitrate"] // 1000,
                 )
-                _stream_process = subprocess.Popen(
-                    cmd,
-                    preexec_fn=os.setsid,
-                    stderr=subprocess.DEVNULL,
-                )
+                try:
+                    _stream_process = subprocess.Popen(cmd, start_new_session=True)
+                except OSError:
+                    log.exception("Could not start rpicam-vid; retrying")
+        if _stream_process is None:
+            _watchdog_stop.wait(timeout=2)
 
         _watchdog_stop.wait(timeout=0.5)
 
@@ -220,6 +202,8 @@ def stop_stream() -> None:
 
 def start_watchdog() -> _threading.Thread:
     """Launch the watchdog thread (call once at startup)."""
+    _watchdog_stop.clear()
+    _watchdog_restart.clear()
     t = _threading.Thread(target=_watchdog, daemon=True, name="stream-watchdog")
     t.start()
     return t
@@ -249,6 +233,9 @@ async def handle_client(websocket) -> None:
                 log.warning("Malformed JSON from %s: %s", client, e)
                 continue
 
+            if not isinstance(msg, dict):
+                continue
+
             if msg.get("type") != "update_settings":
                 continue
 
@@ -260,6 +247,8 @@ async def handle_client(websocket) -> None:
                 continue
 
             updates = msg.get("data", {})
+            if not isinstance(updates, dict):
+                continue
             changed = False
 
             pending: dict[str, int] = {}
@@ -267,12 +256,18 @@ async def handle_client(websocket) -> None:
                 if key not in VALID_KEYS:
                     log.warning("Unknown setting '%s' — ignored", key)
                     continue
-                if not isinstance(value, int):
+                if type(value) is not int:
                     log.warning(
                         "Invalid type for '%s': expected int, got %s",
                         key,
                         type(value).__name__,
                     )
+                    continue
+                if key == "fps" and not 1 <= value <= 30:
+                    log.warning("FPS outside [1, 30] — ignored")
+                    continue
+                if key == "bitrate" and not 100_000 <= value <= 25_000_000:
+                    log.warning("Bitrate outside [100000, 25000000] — ignored")
                     continue
                 pending[key] = value
 
@@ -292,11 +287,12 @@ async def handle_client(websocket) -> None:
                     pending.pop("width", None)
                     pending.pop("height", None)
 
-            for key, value in pending.items():
-                if settings[key] != value:
-                    log.info("  %s: %s → %s", key, settings[key], value)
-                    settings[key] = value
-                    changed = True
+            with _stream_lock:
+                for key, value in pending.items():
+                    if settings[key] != value:
+                        log.info("  %s: %s → %s", key, settings[key], value)
+                        settings[key] = value
+                        changed = True
 
             if changed:
                 start_stream()
@@ -318,13 +314,12 @@ async def handle_client(websocket) -> None:
 async def main() -> None:
     """Start the camera server."""
     acquire_pid_lock()
-    start_watchdog()
+    watchdog = None
+    shutdown = asyncio.Event()
 
     def _shutdown(signum, frame):
         log.info("Received signal %s. Shutting down...", signum)
-        stop_stream()
-        release_pid_lock()
-        sys.exit(0)
+        shutdown.set()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
@@ -333,17 +328,22 @@ async def main() -> None:
     log.info("Video stream (H.264/TCP) available on port %d", _VIDEO_PORT)
 
     # Bind all interfaces: the Pi must be reachable from LAN/Tailscale clients
-    async with websockets.serve(handle_client, "0.0.0.0", _WS_PORT):  # noqa: S104
-        await asyncio.Future()
+    try:
+        async with websockets.serve(
+            handle_client, "0.0.0.0", _WS_PORT, max_size=4096  # noqa: S104
+        ):
+            watchdog = start_watchdog()
+            await shutdown.wait()
+    finally:
+        stop_stream()
+        if watchdog is not None:
+            await asyncio.to_thread(watchdog.join, 10)
+        release_pid_lock()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except SystemExit:
-        pass
     except Exception as e:
         log.exception("Fatal error: %s", e)
-        stop_stream()
-        release_pid_lock()
         sys.exit(1)

@@ -1,0 +1,5 @@
+# CPU-only tests; no torch, model weights, CUDA or camera required.
+-r requirements-core.txt
+onnxruntime>=1.17
+pytest>=8,<10
+ruff==0.13.0

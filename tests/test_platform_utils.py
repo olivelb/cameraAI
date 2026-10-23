@@ -42,3 +42,16 @@ def test_ignores_udp_and_headers():
 
 def test_empty_output():
     assert _listening_pids("", 7860, own_pid=0) == []
+
+
+def test_occupied_port_is_reported_without_terminating_owner():
+    import socket
+    import pytest
+    from platform_utils import cleanup_port
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        with pytest.raises(RuntimeError, match="unavailable"):
+            cleanup_port(listener.getsockname()[1])
+        assert listener.fileno() != -1

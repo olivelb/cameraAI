@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 
 from config import cfg
+from gallery_utils import gallery_directory
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ SAM = None
 class AIProcessor:
     """Central AI inference engine for detection, tracking, and recognition."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, autoload: bool = True) -> None:
         log.info("AIProcessor initializing...")
         self.device: str = "cpu"
 
@@ -82,10 +83,19 @@ class AIProcessor:
         self._vlm_lock = threading.Lock()
         self._vlm_gen_lock = threading.Lock()
 
-        # Start background loader
-        threading.Thread(
-            target=self._async_loader, daemon=True, name="ai-loader"
-        ).start()
+        self._loader_lock = threading.Lock()
+        self._loader_started = False
+        if autoload:
+            self.start_loader()
+
+    def start_loader(self) -> None:
+        """Start model loading exactly once, explicitly at application startup."""
+        with self._loader_lock:
+            if not self._loader_started:
+                self._loader_started = True
+                threading.Thread(
+                    target=self._async_loader, daemon=True, name="ai-loader"
+                ).start()
 
     # ── Background loader ────────────────────────────────────────────────────
 
@@ -169,30 +179,31 @@ class AIProcessor:
             engine_name = target_name.replace(".pt", ".engine")
             if (
                 not is_sam_model
+                and self.device == "cuda"
                 and target_name.endswith(".pt")
                 and os.path.exists(engine_name)
             ):
                 log.info("Found TensorRT engine: %s — using it instead", engine_name)
                 target_name = engine_name
 
-            self.segment_model_name = target_name
-
             with self._infer_lock:
                 # Check cache
                 if target_name in self.loaded_models:
                     log.info("Using cached model: %s", target_name)
                     self.segment_model = self.loaded_models[target_name]
+                    self.segment_model_name = target_name
                     self.model_type = (
                         "sam3"
                         if target_name.lower() == "sam3.pt"
                         else "sam" if "sam" in target_name.lower() else "yolo"
                     )
+                    self._clear_track_history()
                     return f"Loaded Cached {target_name}"
 
                 if target_name.lower() == "sam3.pt":
                     from ultralytics.models.sam import SAM3SemanticPredictor
 
-                    self.segment_model = SAM3SemanticPredictor(
+                    model = SAM3SemanticPredictor(
                         overrides={
                             "conf": 0.25,
                             "task": "segment",
@@ -204,21 +215,25 @@ class AIProcessor:
                             "verbose": False,
                         }
                     )
-                    self.model_type = "sam3"
+                    model_type = "sam3"
                 elif "sam" in target_name.lower():
-                    self.segment_model = SAM(target_name)
-                    self.model_type = "sam"
+                    model = SAM(target_name)
+                    model_type = "sam"
                 else:
-                    self.segment_model = YOLO(target_name)
-                    self.model_type = "yolo"
+                    model = YOLO(target_name)
+                    model_type = "yolo"
 
+                self.segment_model = model
+                self.segment_model_name = target_name
+                self.model_type = model_type
+                self._clear_track_history()
                 self._cache_model(target_name, self.segment_model)
             log.info("Model %s loaded successfully", target_name)
             return f"Loaded {target_name}"
 
         except Exception as e:
             log.error("Model load error: %s", e)
-            return str(e)
+            return f"❌ Model load failed: {e}"
 
     def _cache_model(self, name: str, model) -> None:
         """Cache a loaded model, evicting oldest entries to bound VRAM."""
@@ -246,7 +261,20 @@ class AIProcessor:
 
     def set_tracker(self, tracker_name: str) -> None:
         """Set the active tracker (botsort or bytetrack)."""
-        self.tracker = f"{tracker_name}.yaml"
+        if tracker_name not in {"botsort", "bytetrack"}:
+            raise ValueError("Unknown tracker")
+        with self._infer_lock:
+            self.tracker = f"{tracker_name}.yaml"
+            # persist=True keeps existing Ultralytics tracker objects even when
+            # the filename changes. Rebuild them without registering callbacks twice.
+            for model in self.loaded_models.values():
+                predictor = getattr(model, "predictor", None)
+                if predictor is not None and hasattr(predictor, "trackers"):
+                    from ultralytics.trackers.track import on_predict_start
+
+                    predictor.args.tracker = self.tracker
+                    on_predict_start(predictor, persist=False)
+            self._clear_track_history()
         log.info("Tracker set to: %s", self.tracker)
 
     def export_to_tensorrt(self) -> str:
@@ -256,11 +284,17 @@ class AIProcessor:
         if self.device != "cuda":
             return "❌ TensorRT export requires a CUDA GPU"
 
+        if self.model_type != "yolo":
+            return "❌ TensorRT export is only supported for YOLO models"
         try:
             log.info("Starting TensorRT export for %s...", self.segment_model_name)
-            self.segment_model.export(format="engine", device=0, half=True, workspace=4)
-            engine_name = self.segment_model_name.replace(".pt", ".engine")
-            self.load_segmentation_model(engine_name)
+            with self._infer_lock:
+                self.segment_model.export(format="engine", device=0, half=True, workspace=4)
+                engine_name = self.segment_model_name.replace(".pt", ".engine")
+                mode = "Segmentation" if "-seg" in engine_name else "Detection"
+                result = self.load_segmentation_model(engine_name, mode)
+                if result.startswith("❌"):
+                    return result
             return f"✅ Export Success! Switched to {engine_name}"
         except Exception as e:
             log.error("TRT export failed: %s", e)
@@ -313,8 +347,10 @@ class AIProcessor:
 
     def start_learning(self, name: str, count: int = 5) -> str:
         """Start capturing face samples from the live stream."""
-        if not name:
-            return "❌ Name required"
+        try:
+            gallery_directory(os.path.join(os.path.dirname(__file__), "faces"), name)
+        except ValueError as e:
+            return f"❌ {e}"
         self.learning_name = name
         self.learning_count = count
         self.learning_max = count
@@ -415,8 +451,10 @@ class AIProcessor:
 
     def start_learning_animal(self, name: str, count: int = 5) -> str:
         """Start capturing animal samples from the live stream."""
-        if not name:
-            return "❌ Name required"
+        try:
+            gallery_directory(os.path.join(os.path.dirname(__file__), "animals"), name)
+        except ValueError as e:
+            return f"❌ {e}"
         self.animal_learning_name = name
         self.animal_learning_count = count
         self.animal_learning_max = count
@@ -446,7 +484,12 @@ class AIProcessor:
         If a segmentation mask is available for this detection, it is applied
         to zero out background pixels. Otherwise returns a plain bbox crop.
         """
-        x1, y1, x2, y2 = box
+        h, w = frame_bgr.shape[:2]
+        x1, y1, x2, y2 = map(int, box)
+        x1, x2 = max(0, min(w, x1)), max(0, min(w, x2))
+        y1, y2 = max(0, min(h, y1)), max(0, min(h, y2))
+        if x2 <= x1 or y2 <= y1:
+            return frame_bgr[0:0, 0:0].copy()
         crop = frame_bgr[y1:y2, x1:x2].copy()
 
         if masks is not None and len(masks.xy) > mask_index:
@@ -619,15 +662,7 @@ class AIProcessor:
         masks = results[0].masks
 
         # Clean stale track history and identification caches
-        if track_ids:
-            current_ids = set(track_ids)
-            for per_track in (
-                self.face_history, self.animal_history,
-                self._face_cache, self._animal_cache,
-            ):
-                stale = [tid for tid in per_track if tid not in current_ids]
-                for tid in stale:
-                    del per_track[tid]
+        self._prune_track_history(set(track_ids))
 
         for i, (cls_id, box) in enumerate(zip(classes, boxes_xyxy, strict=False)):
             x1, y1, x2, y2 = box
@@ -716,6 +751,16 @@ class AIProcessor:
                         threading.Thread(target=ar.build_gallery).start()
 
     # ── Frame processing ─────────────────────────────────────────────────────
+
+    def _prune_track_history(self, current_ids: set[int]) -> None:
+        for per_track in (
+            self.face_history, self.animal_history, self._face_cache, self._animal_cache,
+        ):
+            for tid in set(per_track) - current_ids:
+                del per_track[tid]
+
+    def _clear_track_history(self) -> None:
+        self._prune_track_history(set())
 
     def process_frame(
         self, frame_bgr: np.ndarray, conf: float = 0.5
@@ -815,7 +860,7 @@ class AIProcessor:
         if not self.segment_model:
             return frame_bgr, "Model Loading...", [], []
 
-        if self.model_type == "sam":
+        if self.model_type in {"sam", "sam3"}:
             result = self.process_frame(frame_bgr, conf)
             return (*result, [])
 
@@ -853,6 +898,7 @@ class AIProcessor:
             track_ids = []
             if results[0].boxes.id is not None:
                 track_ids = results[0].boxes.id.cpu().numpy().astype(int).tolist()
+            self._prune_track_history(set(track_ids))
 
             # Draw recognition overlays
             if not show_default:
@@ -895,6 +941,10 @@ class AIProcessor:
         total parameters (including embeddings), so generic ``device_map``
         loading in BF16 spills it across both VRAM and system RAM.
         """
+        if torch is None:
+            return "VLM unavailable: AI libraries are still loading"
+        if self.device != "cuda":
+            return "VLM requires a CUDA GPU for 4-bit inference"
         with self._vlm_lock:
             if self._vlm_model is None:
                 log.info("Loading VLM (%s)...", cfg.ai.vlm_model_id)

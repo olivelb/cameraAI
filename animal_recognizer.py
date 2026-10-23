@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 
 from config import cfg
+from gallery_utils import gallery_directory, save_gallery
 
 log = logging.getLogger(__name__)
 
@@ -178,7 +179,10 @@ class AnimalRecognizer:
         if not self.is_ready():
             return "❌ Models loading..."
 
-        animal_dir = ANIMALS_DIR / name
+        try:
+            animal_dir = gallery_directory(ANIMALS_DIR, name)
+        except ValueError as e:
+            return f"❌ {e}"
         animal_dir.mkdir(parents=True, exist_ok=True)
 
         saved = 0
@@ -187,8 +191,8 @@ class AnimalRecognizer:
             if img is None:
                 continue
             dest = animal_dir / f"photo_{int(time.time() * 1000)}_{i}{Path(path).suffix}"
-            cv2.imwrite(str(dest), img)
-            saved += 1
+            if cv2.imwrite(str(dest), img):
+                saved += 1
 
         if saved == 0:
             return f"❌ No valid images for {name}"
@@ -200,16 +204,19 @@ class AnimalRecognizer:
 
     def capture_animal(self, image_bgr: np.ndarray, name: str) -> str:
         """Save an animal crop from the live stream to disk."""
-        if not name:
-            return "❌ Name required"
-
-        animal_dir = ANIMALS_DIR / name
+        try:
+            animal_dir = gallery_directory(ANIMALS_DIR, name)
+        except ValueError as e:
+            return f"❌ {e}"
+        if image_bgr.size == 0:
+            return "❌ Empty animal image"
         animal_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = int(time.time() * 1000)
         filename = f"capture_{timestamp}.jpg"
         path = animal_dir / filename
-        cv2.imwrite(str(path), image_bgr)
+        if not cv2.imwrite(str(path), image_bgr):
+            return "❌ Could not save animal image"
         return f"📸 Saved {filename}"
 
     def identify(self, crop_bgr: np.ndarray) -> tuple[str, float]:
@@ -256,7 +263,7 @@ class AnimalRecognizer:
             ANIMALS_DIR.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = dict(self._gallery)
-            np.savez(str(GALLERY_FILE), **data)
+            save_gallery(GALLERY_FILE, data)
             log.info("Animal gallery saved to %s", GALLERY_FILE)
         except Exception as e:
             log.warning("Could not save gallery: %s", e)
@@ -266,9 +273,9 @@ class AnimalRecognizer:
         if not GALLERY_FILE.exists():
             return
         try:
-            data = np.load(str(GALLERY_FILE))
-            with self._lock:
-                self._gallery = {k: data[k] for k in data.files}
+            with np.load(str(GALLERY_FILE), allow_pickle=False) as data:
+                with self._lock:
+                    self._gallery = {k: data[k] for k in data.files}
             log.info("Animal gallery loaded: %s", list(self._gallery.keys()))
         except Exception as e:
             log.warning("Could not load gallery: %s", e)

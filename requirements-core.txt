@@ -1,0 +1,12 @@
+# UI version qualified by the HTTP authentication and app construction tests.
+# Gradio 5 requires huggingface-hub<1 and conflicts with the pinned Transformers.
+gradio==6.30.0
+fastapi==0.161.1
+opencv-python>=4.8
+numpy>=1.24,<3
+Pillow>=10.0.1,<13
+PyYAML>=6.0,<7
+websocket-client>=1.6
+websockets>=15,<16
+cryptography>=41.0
+psutil>=5.9; sys_platform == "win32"

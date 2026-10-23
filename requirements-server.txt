@@ -1,0 +1,3 @@
+# Install only this file on the Raspberry Pi.
+PyYAML>=6.0,<7
+websockets>=15,<16

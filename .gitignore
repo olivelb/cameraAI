@@ -13,6 +13,11 @@ dist/
 build/
 venv/
 .venv/
+.venv-audit/
+.venv-test/
+.audit-tmp/
+.pytest_cache/
+.ruff_cache/
 *.so
 
 # ── Secrets & credentials ───────────────────────────────────────────────────

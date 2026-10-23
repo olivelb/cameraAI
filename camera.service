@@ -7,11 +7,11 @@ Wants=network-online.target
 Type=simple
 User=camera
 WorkingDirectory=/opt/smart-camera
-ExecStart=/usr/bin/python /opt/smart-camera/server.py
+ExecStart=/usr/bin/python3 /opt/smart-camera/server.py
 Restart=always
 RestartSec=5
 # Ensure the entire process group (rpicam-vid child) is killed on stop
-KillMode=process-group
+KillMode=control-group
 KillSignal=SIGTERM
 
 [Install]

@@ -10,8 +10,8 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["F", "E", "W", "B", "UP", "S"]
 # E501: long lines handled by line-length above where practical
-# S603: subprocess calls use static argv lists (taskkill/netstat/rpicam-vid)
-# S607: rpicam-vid / taskkill are resolved from PATH by design
+# S603: subprocess calls use argument lists, never a shell
+# S607: rpicam-vid / nice are resolved from PATH by design
 # S108: /tmp is the conventional pid-file location on the Pi
 ignore = ["E501", "S603", "S607", "S108"]
 

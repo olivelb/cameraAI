@@ -30,6 +30,7 @@ import numpy as np
 import onnxruntime as ort
 
 from config import cfg
+from gallery_utils import gallery_directory, save_gallery
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def _preprocess_det(img_bgr: np.ndarray) -> tuple[np.ndarray, float, float]:
     scale_x = _DET_INPUT_SIZE[0] / w
     scale_y = _DET_INPUT_SIZE[1] / h
     resized = cv2.resize(img_bgr, _DET_INPUT_SIZE)
-    blob = (resized.astype(np.float32) - _DET_MEAN) / _DET_STD
+    blob = (resized[:, :, ::-1].astype(np.float32) - _DET_MEAN) / _DET_STD
     blob = blob.transpose(2, 0, 1)[np.newaxis]  # NCHW
     return blob, scale_x, scale_y
 
@@ -147,8 +148,8 @@ def _decode_det(
 
         box = outputs[box_idx]
 
-        cx = (np.arange(fw) + 0.5) * stride
-        cy = (np.arange(fh) + 0.5) * stride
+        cx = np.arange(fw) * stride
+        cy = np.arange(fh) * stride
         cx, cy = np.meshgrid(cx, cy)
         centres = np.stack([cx.ravel(), cy.ravel()], axis=1)
         centres = np.repeat(centres, _NUM_ANCH, axis=0)
@@ -195,7 +196,8 @@ def _decode_det(
         result.append((
             int(x1 / scale_x), int(y1 / scale_y),
             int(x2 / scale_x), int(y2 / scale_y),
-            kps_all[i].astype(np.float32),
+            (kps_all[i] / np.array([scale_x, scale_y])).astype(np.float32)
+            if len(outputs) >= 3 * num_strides else None,
         ))
     return result
 
@@ -374,7 +376,10 @@ class FaceRecognizer:
         if not self.is_ready():
             return "❌ Models not loaded"
 
-        person_dir = FACES_DIR / name
+        try:
+            person_dir = gallery_directory(FACES_DIR, name)
+        except ValueError as e:
+            return f"❌ {e}"
         person_dir.mkdir(parents=True, exist_ok=True)
 
         # Timestamped names so repeated additions never overwrite existing photos
@@ -385,8 +390,8 @@ class FaceRecognizer:
             if img is None:
                 continue
             dest = person_dir / f"photo_{base_ts}_{i:03d}{Path(path).suffix}"
-            cv2.imwrite(str(dest), img)
-            saved += 1
+            if cv2.imwrite(str(dest), img):
+                saved += 1
 
         if saved == 0:
             return f"❌ No valid images for {name}"
@@ -400,8 +405,10 @@ class FaceRecognizer:
         name: str,
     ) -> str:
         """Save the face in bbox to faces/<name>/captured_<timestamp>.jpg."""
-        if not name:
-            return "❌ Name required"
+        try:
+            person_dir = gallery_directory(FACES_DIR, name)
+        except ValueError as e:
+            return f"❌ {e}"
 
         x1, y1, x2, y2 = bbox
         h, w = frame_bgr.shape[:2]
@@ -418,12 +425,12 @@ class FaceRecognizer:
             return "❌ Invalid face region"
 
         timestamp = int(time.time() * 1000)
-        person_dir = FACES_DIR / name
         person_dir.mkdir(parents=True, exist_ok=True)
 
         filename = f"capture_{timestamp}.jpg"
         path = person_dir / filename
-        cv2.imwrite(str(path), face_img)
+        if not cv2.imwrite(str(path), face_img):
+            return "❌ Could not save face image"
         log.info("Captured face for %s: %s", name, path)
         return f"📸 Saved {filename}"
 
@@ -441,7 +448,7 @@ class FaceRecognizer:
             FACES_DIR.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = dict(self._gallery)
-            np.savez(str(GALLERY_FILE), **data)
+            save_gallery(GALLERY_FILE, data)
             log.info("Face gallery saved to %s", GALLERY_FILE)
         except Exception as e:
             log.warning("Could not save gallery: %s", e)
@@ -451,9 +458,9 @@ class FaceRecognizer:
         if not GALLERY_FILE.exists():
             return
         try:
-            data = np.load(str(GALLERY_FILE))
-            with self._lock:
-                self._gallery = {k: data[k] for k in data.files}
+            with np.load(str(GALLERY_FILE), allow_pickle=False) as data:
+                with self._lock:
+                    self._gallery = {k: data[k] for k in data.files}
             log.info("Face gallery loaded: %s", list(self._gallery.keys()))
         except Exception as e:
             log.warning("Could not load gallery: %s", e)

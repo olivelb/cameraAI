@@ -30,9 +30,24 @@ AI-powered smart camera application that connects to a Raspberry Pi camera strea
 
 ### 1. Install Dependencies
 
+Use a dedicated Python 3.11+ environment (do not mix this application with
+other ML projects). Choose a PyTorch build matching your CUDA installation
+before installing the full ML requirements.
+
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+# Linux: source .venv/bin/activate
+# Windows PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
 ```
+
+The UI is qualified with Gradio 6.30.0. Gradio 5's Hugging Face Hub constraint
+conflicts with the project's pinned Transformers revision. The VLM uses 4-bit
+CUDA inference; CPU detection is supported but the VLM requires a CUDA GPU.
+See [the audit](AUDIT.md) for remaining dependency security findings and the
+qualification limits of this setup.
 
 ### 2. Configure
 
@@ -77,16 +92,24 @@ The app will be available at `http://localhost:7860`.
 
 ### 5. Run the Camera Server (on Pi)
 
-Copy `server.py`, `config.py`, `config.yaml`, and `config.example.yaml` to your Pi, then:
+Copy `server.py`, `config.py`, `config.yaml`, `config.example.yaml`, and
+`requirements-server.txt` to your Pi. Install only the lightweight Pi dependencies:
 
 ```bash
+python3 -m venv camera-venv
+source camera-venv/bin/activate
+python -m pip install -r requirements-server.txt
 python server.py
 ```
 
-To run as a systemd service:
+To run as a systemd service, copy `camera.service` too, and adjust `User`,
+`WorkingDirectory`, and `ExecStart` to your installation. For the virtual environment
+above, use its absolute interpreter path (for example,
+`/opt/smart-camera/.venv/bin/python`). Then:
 
 ```bash
 sudo cp camera.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable camera
 sudo systemctl start camera
 ```
@@ -122,10 +145,17 @@ CAMERA__UI__AUTH_PASSWORD=s3cret python app.py
   `ui.auth_username`/`ui.auth_password` (or the `CAMERA__UI__AUTH_PASSWORD`
   environment variable). If `cert.pem`/`key.pem` exist in the project root,
   the UI is served over HTTPS automatically.
+- Startup rejects public sharing without a complete login. The custom `/stream`
+  endpoint checks the same Gradio session as the UI. An unauthenticated request
+  receives HTTP 401 when login is configured.
 - **Pi control channel**: set the same random secret in `pi.auth_token` and
   `server.auth_token` (e.g. `python -c "import secrets; print(secrets.token_hex(16))"`),
   then copy the updated `config.yaml` to the Pi. Update messages sent
   without the token are rejected.
+- The Pi H.264/TCP video port has no authentication or transport encryption;
+  the control token protects settings changes only. Keep both Pi ports on a
+  trusted private network or a VPN. A missing config/dependency now fails startup
+  rather than silently disabling configured authentication.
 - **Email**: the app password is stored Fernet-encrypted in
   `email_config.json` (key: `.secret.key`); it is never displayed in the UI.
   Both files are git-ignored — never commit them.
@@ -157,15 +187,36 @@ animals/
 
 Then click **Rebuild Gallery** in the UI, or use the **Capture & Learn** button to learn from the live stream.
 
+Gallery names must be plain names (accents and spaces are supported), without
+paths or reserved filesystem characters. After updating from the pre-audit
+version, rebuild the **face** gallery once: detector RGB preprocessing, anchor
+coordinates, and landmark rescaling have been corrected. The original photos
+and existing gallery remain intact until you explicitly rebuild them.
+
 ## Development
 
-Run the unit tests (config parsing, port cleanup parser):
+Run the CPU-only unit and local HTTP/WebSocket integration tests in a separate
+environment. No camera, SMTP account, model download, or GPU is needed:
 
 ```bash
-pip install pytest ruff
-pytest
-ruff check .
+python -m venv .venv-test
+# Activate this environment as above.
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+python -m pip check
+python -m pytest -q
+python -m ruff check .
 ```
+
+Do not install the CPU test `onnxruntime` alongside `onnxruntime-gpu` in the
+same environment. CI defines Ubuntu/Python 3.11 and Windows/Python 3.13 checks;
+the Linux PID lock test is deliberately skipped on Windows.
+
+An occupied UI port now produces an actionable error; startup never kills its
+owner. Windows boost is applied only at startup and uses ABOVE_NORMAL priority.
+The Pi retains its PID file as an advisory-lock inode; a leftover file does not
+mean a process is running. See [AUDIT.md](AUDIT.md) for findings, evidence and
+prioritized improvements.
 
 ## License
 

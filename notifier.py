@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import ssl
 import threading
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -83,7 +84,7 @@ class EmailNotifier:
         with smtplib.SMTP(
             self.smtp_server, self.smtp_port, timeout=self.timeout
         ) as server:
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
             server.login(sender_email, sender_password)
             server.send_message(msg)
 

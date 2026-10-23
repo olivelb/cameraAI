@@ -62,7 +62,7 @@ stream:
 ui:
   server_host: "127.0.0.1"
   server_port: 7860
-  share: false                   # true exposes the app on a public gradio.live URL!
+  share: false                   # true requires both login fields below
   auth_username: ""              # Set both fields (or CAMERA__UI__AUTH_PASSWORD env
   auth_password: ""              # var) to protect the UI with a login
   log_max_lines: 20

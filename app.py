@@ -9,17 +9,19 @@ provides a web-based control panel.
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
 import socket
 import threading
 import time
+import tempfile
+from pathlib import Path
 
 import cv2
 import gradio as gr
 import numpy as np
 from cryptography.fernet import Fernet
-from fastapi.responses import StreamingResponse
 from PIL import Image
 from websocket import create_connection
 
@@ -27,9 +29,7 @@ from ai import AIProcessor
 from config import cfg
 from notifier import EmailNotifier
 from platform_utils import apply_windows_boost, cleanup_port
-
-# ── Apply platform optimizations early ────────────────────────────────────────
-apply_windows_boost()
+from streaming import attach_stream
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -73,22 +73,28 @@ cam_source_mode: str = "pi"
 
 # ── Core components ──────────────────────────────────────────────────────────
 log.info("Initializing AI Engine (lazy loading — app starts immediately)...")
-ai = AIProcessor()
+ai = AIProcessor(autoload=False)
 notifier = EmailNotifier()
 
 # ── Email config & encryption ────────────────────────────────────────────────
-_CONFIG_FILE = "email_config.json"
-_KEY_FILE = ".secret.key"
+_ROOT = Path(__file__).resolve().parent
+_CONFIG_FILE = _ROOT / "email_config.json"
+_KEY_FILE = _ROOT / ".secret.key"
+_EMAIL_LOCK = threading.RLock()
 
-if not os.path.exists(_KEY_FILE):
-    _key = Fernet.generate_key()
-    with open(_KEY_FILE, "wb") as f:
-        f.write(_key)
-else:
-    with open(_KEY_FILE, "rb") as f:
-        _key = f.read()
 
-_cipher = Fernet(_key)
+def _get_cipher() -> Fernet:
+    """Create the key only when saving credentials, with restrictive permissions."""
+    with _EMAIL_LOCK:
+        if not _KEY_FILE.exists():
+            try:
+                fd = os.open(_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                pass
+            else:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(Fernet.generate_key())
+        return Fernet(_KEY_FILE.read_bytes())
 
 email_config: dict = {
     "enabled": False,
@@ -106,16 +112,27 @@ if os.path.exists(_CONFIG_FILE):
             email_config["enabled"] = False
             if email_config["password"]:
                 try:
-                    email_config["password"] = _cipher.decrypt(
+                    if not _KEY_FILE.exists():
+                        raise ValueError("Email encryption key is missing")
+                    email_config["password"] = _get_cipher().decrypt(
                         email_config["password"].encode()
                     ).decode()
                 except Exception as e:
+                    email_config["password"] = ""
                     log.warning("Password decryption failed: %s", e)
     except Exception as e:
         log.error("Failed to load email config: %s", e)
 
 
 def save_email_settings(
+    enabled: bool, sender: str, password: str, receiver: str
+) -> str:
+    """Serialize updates so disk and memory agree after each credential save."""
+    with _EMAIL_LOCK:
+        return _save_email_settings(enabled, sender, password, receiver)
+
+
+def _save_email_settings(
     enabled: bool, sender: str, password: str, receiver: str
 ) -> str:
     """Save email alert settings to disk with encrypted password.
@@ -126,20 +143,29 @@ def save_email_settings(
     new_password = password if password else email_config.get("password", "")
     encrypted_password = ""
     if new_password:
-        encrypted_password = _cipher.encrypt(new_password.encode()).decode()
+        encrypted_password = _get_cipher().encrypt(new_password.encode()).decode()
 
-    email_config = {
+    updated_config = {
         "enabled": enabled,
         "sender": sender,
         "password": new_password,
         "receiver": receiver,
     }
 
-    config_to_save = email_config.copy()
+    config_to_save = updated_config.copy()
     config_to_save["password"] = encrypted_password
 
-    with open(_CONFIG_FILE, "w") as f:
-        json.dump(config_to_save, f)
+    fd, temporary = tempfile.mkstemp(prefix=".email-", suffix=".json", dir=_ROOT)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(config_to_save, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, _CONFIG_FILE)
+        with _EMAIL_LOCK:
+            email_config = updated_config
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     ui_log(f"Email settings saved. Enabled: {enabled}")
     return f"Saved! Alerts Enabled: {enabled}"
 
@@ -216,7 +242,7 @@ class AlertManager:
             subject = f"[Camera Alert] {name.capitalize()} Detected"
             body = f"A {name} was detected.\n\nAI Analysis:\n{desc}"
 
-            notifier.send_email(
+            notifier.send_email_sync(
                 email_config["sender"],
                 email_config["password"],
                 email_config["receiver"],
@@ -243,8 +269,18 @@ def _send_ws(data: dict, label: str = "") -> str:
         if cfg.pi.auth_token:
             payload["token"] = cfg.pi.auth_token
         conn = create_connection(cfg.pi.ws_url, timeout=3)
-        conn.send(json.dumps(payload))
-        conn.close()
+        try:
+            initial = json.loads(conn.recv())
+            if initial.get("type") != "current_settings":
+                raise ValueError("Invalid initial settings from camera server")
+            conn.send(json.dumps(payload))
+            reply = json.loads(conn.recv())
+            if reply.get("type") != "current_settings":
+                raise ValueError("Camera server did not acknowledge settings")
+            if any(reply.get("data", {}).get(k) != v for k, v in data.get("data", {}).items()):
+                raise ValueError("Camera server rejected the requested settings")
+        finally:
+            conn.close()
         ui_log(f"✅ Sent {label}")
         return f"Sent {label}"
     except Exception as e:
@@ -273,7 +309,8 @@ def set_resolution(res_str: str) -> str:
 
 def toggle_email_state(enabled: bool) -> None:
     """Toggle email alerts on/off."""
-    email_config["enabled"] = enabled
+    with _EMAIL_LOCK:
+        email_config["enabled"] = enabled
     ui_log(f"🔔 Alerts set to: {enabled}")
 
 
@@ -307,6 +344,7 @@ state = AppState()
 
 # ── Video capture thread (Pi stream) ─────────────────────────────────────────
 _FAIL_THRESHOLD = 10
+_STOP = threading.Event()
 
 
 def read_stream() -> None:
@@ -326,13 +364,16 @@ def read_stream() -> None:
             except Exception as e:
                 log.debug("Error releasing previous capture: %s", e)
         ui_log("🖥️ Connecting to Pi camera server...")
-        cap = cv2.VideoCapture(cfg.pi.video_url)
+        cap = cv2.VideoCapture(cfg.pi.video_url, cv2.CAP_FFMPEG, [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000,
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
+        ])
         fail_count = 0
         return cap
 
     connect()
 
-    while True:
+    while not _STOP.is_set():
         try:
             if cam_source_mode == "webcam":
                 time.sleep(0.5)
@@ -364,6 +405,9 @@ def read_stream() -> None:
             time.sleep(2)
             connect()
 
+    if cap is not None:
+        cap.release()
+
 
 # ── AI processing thread ────────────────────────────────────────────────────
 
@@ -373,7 +417,7 @@ def ai_loop() -> None:
     Runs as fast as the GPU allows, completely decoupled from the Gradio
     timer refresh rate.
     """
-    while True:
+    while not _STOP.is_set():
         try:
             with state.lock:
                 if state.last_frame is None or state.frame_id == state.processed_id:
@@ -428,16 +472,17 @@ def start_background_threads() -> None:
     if _threads_started:
         return
     _threads_started = True
+    ai.start_loader()
     threading.Thread(target=read_stream, daemon=True, name="stream-reader").start()
     threading.Thread(target=ai_loop, daemon=True, name="ai-loop").start()
 
 
 # ── MJPEG stream generator ──────────────────────────────────────────────────
 
-def generate_mjpeg():
+async def generate_mjpeg():
     """Generator yielding MJPEG frames for the /stream endpoint."""
     last_sent_id = -1
-    while True:
+    while not _STOP.is_set():
         with state.lock:
             if state.last_processed is None or state.processed_id == last_sent_id:
                 frame_to_send = None
@@ -446,7 +491,7 @@ def generate_mjpeg():
                 last_sent_id = state.processed_id
 
         if frame_to_send is None:
-            time.sleep(0.005)
+            await asyncio.sleep(0.01)
             continue
 
         ret, buffer = cv2.imencode(
@@ -593,7 +638,7 @@ def switch_source(mode_label: str):
 
 # ── Gradio UI Layout ────────────────────────────────────────────────────────
 
-with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
+with gr.Blocks(title="AI Vision") as demo:
     gr.Markdown("# 👁️ Smart Vision")
 
     with gr.Row():
@@ -621,8 +666,8 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
             with gr.Group(visible=True) as pi_group:
                 with gr.Row():
                     res_dropdown = gr.Dropdown(
-                        ["640x480", "1296x972", "1920x1080"],
-                        value="640x480",
+                        [f"{w}x{h}" for w, h in cfg.camera.valid_resolutions],
+                        value="x".join(map(str, cfg.pi.default_resolution)),
                         label="Pi Resolution",
                     )
                     task_mode = gr.Radio(
@@ -776,7 +821,7 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
             )
 
             gr.Markdown("### 💬 Vision Assistant")
-            chat = gr.ChatInterface(fn=ask_vlm, type="messages")
+            chat = gr.ChatInterface(fn=ask_vlm)
 
             info_output = gr.Textbox(label="System Status", interactive=False)
 
@@ -842,6 +887,7 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
 
 if __name__ == "__main__":
     cleanup_port(cfg.ui.server_port)
+    apply_windows_boost()
     start_background_threads()
 
     # Get local IP for display
@@ -885,22 +931,19 @@ if __name__ == "__main__":
         server_port=cfg.ui.server_port,
         share=cfg.ui.share,
         auth=auth,
+        theme=gr.themes.Base(),
         prevent_thread_lock=True,
         **ssl_kwargs,
     )
 
     # Attach MJPEG stream endpoint
-    app_server.add_api_route(
-        "/stream",
-        endpoint=lambda: StreamingResponse(
-            generate_mjpeg(),
-            media_type="multipart/x-mixed-replace; boundary=frame",
-        ),
-        methods=["GET"],
-    )
+    attach_stream(app_server, generate_mjpeg)
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Shutting down...")
+        log.info("Shutting down...")
+    finally:
+        _STOP.set()
+        demo.close()

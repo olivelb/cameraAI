@@ -55,3 +55,54 @@ def test_urls_built_from_host():
     pi = config.PiSettings(host="example.host", video_port=1234, ws_port=5678)
     assert pi.video_url == "tcp://example.host:1234"
     assert pi.ws_url == "ws://example.host:5678"
+
+
+def test_env_types_do_not_depend_on_yaml_keys(monkeypatch):
+    monkeypatch.setenv("CAMERA__UI__SHARE", "false")
+    monkeypatch.setenv("CAMERA__PI__VIDEO_PORT", "9001")
+    monkeypatch.setenv("CAMERA__AI__FACE_THRESHOLD", "0.6")
+    monkeypatch.setenv("CAMERA__AI__ANIMAL_CLASSES", "[15, 16]")
+    monkeypatch.setenv("CAMERA__UI__AUTH_PASSWORD", "012345")
+    data = config._apply_env_overrides({})
+    assert data["ui"]["share"] is False
+    assert data["ui"]["auth_password"] == "012345"  # noqa: S105 - test fixture
+    assert data["pi"]["video_port"] == 9001
+    assert data["ai"]["face_threshold"] == 0.6
+    assert data["ai"]["animal_classes"] == [15, 16]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("CAMERA__UI__SHARE", "flase"),
+    ("CAMERA__UI__SHRAE", "true"),
+    ("CAMERA__UNKNOWN__HOST", "host"),
+    ("CAMERA__PI__VIDEO_PORT", "invalid"),
+])
+def test_bad_overrides_fail_without_leaking_values(monkeypatch, key, value):
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError):
+        config._apply_env_overrides({})
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("ui", "share", "false"), ("ui", "share", True),
+    ("ui", "auth_password", "secret"),
+    ("ai", "face_threshold", 1.1), ("ai", "animal_threshold", float("nan")),
+    ("ai", "detection_classes", [-1]), ("pi", "video_port", True),
+    ("pi", "video_port", 70000), ("server", "default_fps", 0),
+    ("camera", "valid_resolutions", [[640]]),
+    ("alerts", "alert_classes", [{"id": True, "name": "person"}]),
+])
+def test_invalid_settings_rejected(section, key, value):
+    settings = config.Settings()
+    setattr(getattr(settings, section), key, value)
+    with pytest.raises(ValueError):
+        config.validate_settings(settings)
+
+
+def test_load_rejects_unknown_or_malformed_yaml(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(config, "_CONFIG_FILE", path)
+    for source in ("[]", "pi: 42", "ui:\n  typo: true"):
+        path.write_text(source, encoding="utf-8")
+        with pytest.raises(ValueError):
+            config.load_settings()
