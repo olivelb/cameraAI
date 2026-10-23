@@ -358,19 +358,60 @@ class AIProcessor:
         if ar:
             ar.threshold = float(val)
 
+    def _make_animal_crop_fn(self):
+        """Build a callable isolating the largest animal in a photo.
+
+        Uses the active YOLO model (segmentation masks included) so
+        gallery embeddings live in the same domain as the masked runtime
+        crops. Returns None when no suitable model is loaded.
+        """
+        if self.model_type != "yolo" or self.segment_model is None:
+            return None
+
+        def crop_animal(img_bgr: np.ndarray):
+            try:
+                with self._infer_lock:
+                    results = self.segment_model(
+                        img_bgr,
+                        conf=0.3,
+                        verbose=False,
+                        device=self.device,
+                        classes=cfg.ai.animal_classes,
+                    )
+                boxes = results[0].boxes
+                if len(boxes) == 0:
+                    return None
+                xyxy = boxes.xyxy.cpu().numpy().astype(int)
+                areas = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
+                idx = int(np.argmax(areas))
+                return self._extract_animal_crop(
+                    img_bgr, xyxy[idx], results[0].masks, idx
+                )
+            except Exception as e:
+                log.warning("Animal gallery crop failed: %s", e)
+                return None
+
+        return crop_animal
+
     def rebuild_animal_gallery(self) -> str:
         """Rebuild animal gallery from the animals/ directory."""
         ar = self._get_animal_recognizer()
         if ar is None:
             return "❌ Animal recognizer not available"
-        return ar.build_gallery()
+        crop_fn = self._make_animal_crop_fn()
+        if crop_fn is None:
+            log.warning(
+                "No YOLO model active — embedding full photos; switch to a "
+                "YOLO model and rebuild for best animal recognition accuracy"
+            )
+        return ar.build_gallery(crop_fn=crop_fn)
 
     def add_animal_to_gallery(self, name: str, image_paths: list[str]) -> str:
         """Add an animal to the gallery from uploaded images."""
         ar = self._get_animal_recognizer()
         if ar is None:
             return "❌ Animal recognizer not available"
-        return ar.add_animal(name, image_paths)
+        return ar.add_animal(name, image_paths, crop_fn=self._make_animal_crop_fn())
 
     def start_learning_animal(self, name: str, count: int = 5) -> str:
         """Start capturing animal samples from the live stream."""

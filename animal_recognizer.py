@@ -18,6 +18,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from collections.abc import Callable
 
 import cv2
 import numpy as np
@@ -110,8 +111,18 @@ class AnimalRecognizer:
             log.error("Embedding error: %s", e)
             return None
 
-    def build_gallery(self) -> str:
-        """Scan animals/<name>/ subfolders and build mean embeddings."""
+    def build_gallery(
+        self, crop_fn: Callable[[np.ndarray], np.ndarray | None] | None = None
+    ) -> str:
+        """Scan animals/<name>/ subfolders and build mean embeddings.
+
+        Args:
+            crop_fn: optional callable isolating the animal in a photo
+                (e.g. YOLO bbox + segmentation mask). Using it keeps the
+                gallery in the same domain as the masked runtime crops,
+                which noticeably improves identification. Without it,
+                full photos are embedded.
+        """
         if not self.is_ready():
             return "❌ Models still loading..."
 
@@ -134,6 +145,11 @@ class AnimalRecognizer:
                 if img is None:
                     continue
 
+                if crop_fn is not None:
+                    cropped = crop_fn(img)
+                    if cropped is not None and cropped.size > 0:
+                        img = cropped
+
                 emb = self._embed(img)
                 if emb is not None:
                     embeddings.append(emb)
@@ -152,7 +168,12 @@ class AnimalRecognizer:
         names = list(gallery.keys())
         return f"✅ Gallery built: {names} ({total_photos} photos)"
 
-    def add_animal(self, name: str, image_paths: list[str]) -> str:
+    def add_animal(
+        self,
+        name: str,
+        image_paths: list[str],
+        crop_fn: Callable[[np.ndarray], np.ndarray | None] | None = None,
+    ) -> str:
         """Add or update an animal in the gallery from uploaded images."""
         if not self.is_ready():
             return "❌ Models loading..."
@@ -172,7 +193,9 @@ class AnimalRecognizer:
         if saved == 0:
             return f"❌ No valid images for {name}"
 
-        threading.Thread(target=self.build_gallery, daemon=True).start()
+        threading.Thread(
+            target=self.build_gallery, kwargs={"crop_fn": crop_fn}, daemon=True
+        ).start()
         return f"✅ Added {saved} photos for {name}. Rebuilding gallery..."
 
     def capture_animal(self, image_bgr: np.ndarray, name: str) -> str:
