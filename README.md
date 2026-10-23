@@ -98,15 +98,39 @@ All settings are in `config.yaml`. Key options:
 | Setting | Description | Default |
 |---|---|---|
 | `pi.host` | Raspberry Pi IP address | `camera.example.invalid` |
+| `pi.auth_token` / `server.auth_token` | Shared secret for the Pi WebSocket control channel | `""` (no auth) |
 | `ai.default_model` | Default YOLO model | `yolo26n.pt` |
 | `ai.vlm_model_id` | VLM for scene description | `google/gemma-4-E2B-it` |
 | `ai.animal_embed_model` | Animal embedding model | `facebook/dinov3-small` |
+| `ai.person_class` / `ai.animal_classes` | COCO ids driving face/animal recognition | `0` / `[15, 16]` |
+| `ai.face_recheck_interval` / `animal_recheck_interval` | Re-identify each tracked subject every N frames | `10` |
+| `ai.max_cached_models` | Max models kept loaded (VRAM bound) | `2` |
+| `ui.share` | Publish the UI on a public gradio.live URL | `false` |
+| `ui.auth_username` / `ui.auth_password` | Login protecting the web UI | `""` (no login) |
 | `server.default_bitrate` | Video stream bitrate | `2000000` (2 Mbps) |
 
 Environment variable overrides are supported:
 ```bash
 CAMERA__PI__HOST=192.0.2.20 python app.py
+CAMERA__UI__AUTH_PASSWORD=s3cret python app.py
 ```
+
+## Security notes
+
+- **Web UI**: `ui.share: true` publishes the app (live camera feed included)
+  on a public `gradio.live` URL. Only enable it together with
+  `ui.auth_username`/`ui.auth_password` (or the `CAMERA__UI__AUTH_PASSWORD`
+  environment variable). If `cert.pem`/`key.pem` exist in the project root,
+  the UI is served over HTTPS automatically.
+- **Pi control channel**: set the same random secret in `pi.auth_token` and
+  `server.auth_token` (e.g. `python -c "import secrets; print(secrets.token_hex(16))"`),
+  then copy the updated `config.yaml` to the Pi. Update messages sent
+  without the token are rejected.
+- **Email**: the app password is stored Fernet-encrypted in
+  `email_config.json` (key: `.secret.key`); it is never displayed in the UI.
+  Both files are git-ignored — never commit them.
+- `config.yaml`, model weights, and the `faces/`/`animals/` biometric
+  galleries are git-ignored by design.
 
 ## Gallery Setup
 
@@ -132,6 +156,16 @@ animals/
 ```
 
 Then click **Rebuild Gallery** in the UI, or use the **Capture & Learn** button to learn from the live stream.
+
+## Development
+
+Run the unit tests (config parsing, port cleanup parser):
+
+```bash
+pip install pytest ruff
+pytest
+ruff check .
+```
 
 ## License
 
