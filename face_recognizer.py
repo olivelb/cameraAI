@@ -88,6 +88,19 @@ _DET_STD = 128.0
 _STRIDES = [8, 16, 32]
 _NUM_ANCH = 2
 
+# Canonical 5-point eye/nose/mouth positions for 112x112 ArcFace crops
+# (identical to insightface's arcface_dst — required for model accuracy)
+_ARCFACE_REF = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
+
 
 def _preprocess_det(img_bgr: np.ndarray) -> tuple[np.ndarray, float, float]:
     """Resize + normalize for RetinaFace."""
@@ -106,15 +119,22 @@ def _decode_det(
     scale_y: float,
     score_thresh: float = 0.5,
     nms_thresh: float = 0.4,
-) -> list[tuple[int, int, int, int]]:
-    """Decode RetinaFace outputs → list of (x1, y1, x2, y2) in original coords."""
+) -> list[tuple[int, int, int, int, np.ndarray | None]]:
+    """Decode RetinaFace outputs.
+
+    Returns a list of ``(x1, y1, x2, y2, kps)`` in original image
+    coordinates, where ``kps`` is a ``(5, 2)`` array of facial landmarks
+    (eyes, nose, mouth corners) or ``None`` when unavailable.
+    """
     scores_list: list[np.ndarray] = []
     boxes_list: list[np.ndarray] = []
+    kps_list: list[np.ndarray] = []
     num_strides = len(_STRIDES)
 
     for i, stride in enumerate(_STRIDES):
         score_idx = i
         box_idx = i + num_strides
+        kps_idx = i + 2 * num_strides
 
         fh = _DET_INPUT_SIZE[1] // stride
         fw = _DET_INPUT_SIZE[0] // stride
@@ -138,15 +158,29 @@ def _decode_det(
         x2 = centres[:, 0] + box[:, 2] * stride
         y2 = centres[:, 1] + box[:, 3] * stride
 
+        # Landmarks are stride-relative offsets from each anchor centre
+        if kps_idx < len(outputs):
+            kps = outputs[kps_idx].reshape(-1, 10).copy()
+            kps[:, 0::2] = kps[:, 0::2] * stride + centres[:, 0:1]
+            kps[:, 1::2] = kps[:, 1::2] * stride + centres[:, 1:2]
+            kps = kps.reshape(-1, 5, 2)
+        else:
+            kps = np.zeros((len(score), 5, 2), dtype=np.float32)
+
         mask = score > score_thresh
         scores_list.append(score[mask])
         boxes_list.append(np.stack([x1, y1, x2, y2], axis=1)[mask])
+        kps_list.append(kps[mask])
 
     if not scores_list:
         return []
 
     scores = np.concatenate(scores_list)
     boxes = np.concatenate(boxes_list)
+    kps_all = np.concatenate(kps_list)
+
+    if len(scores) == 0:
+        return []
 
     # cv2.dnn.NMSBoxes expects [x, y, w, h] rectangles, not x1y1x2y2 corners
     rects = np.column_stack([boxes[:, :2], boxes[:, 2:] - boxes[:, :2]]).tolist()
@@ -161,6 +195,7 @@ def _decode_det(
         result.append((
             int(x1 / scale_x), int(y1 / scale_y),
             int(x2 / scale_x), int(y2 / scale_y),
+            kps_all[i].astype(np.float32),
         ))
     return result
 
@@ -182,6 +217,38 @@ def _align_face(
     face = img_bgr[y1:y2, x1:x2]
     face = cv2.resize(face, _REC_INPUT_SIZE)
     return face
+
+
+def _align_face_kps(
+    img_bgr: np.ndarray, kps: np.ndarray | None
+) -> np.ndarray | None:
+    """Align a face to 112×112 with a similarity transform on 5 landmarks.
+
+    This matches the alignment protocol ArcFace was trained on and gives
+    markedly more consistent embeddings than a plain bounding-box crop.
+    """
+    if kps is None:
+        return None
+    kps = np.asarray(kps, dtype=np.float32)
+    if kps.shape != (5, 2) or not np.isfinite(kps).all():
+        return None
+    m, _ = cv2.estimateAffinePartial2D(kps, _ARCFACE_REF)
+    if m is None:
+        return None
+    return cv2.warpAffine(img_bgr, m, _REC_INPUT_SIZE, borderValue=0)
+
+
+def _best_face_crop(img_bgr: np.ndarray, face: tuple) -> np.ndarray | None:
+    """Extract a 112×112 crop from a detected face tuple.
+
+    Prefers landmark alignment; falls back to the bounding-box crop when
+    landmarks are unusable.
+    """
+    x1, y1, x2, y2, kps = face
+    crop = _align_face_kps(img_bgr, kps)
+    if crop is not None:
+        return crop
+    return _align_face(img_bgr, x1, y1, x2, y2)
 
 
 def _apply_clahe(img_bgr: np.ndarray) -> np.ndarray:
@@ -395,8 +462,8 @@ class FaceRecognizer:
 
     def _detect_faces(
         self, img_bgr: np.ndarray
-    ) -> list[tuple[int, int, int, int]]:
-        """Run RetinaFace on the full image, return list of (x1, y1, x2, y2)."""
+    ) -> list[tuple[int, int, int, int, np.ndarray | None]]:
+        """Run RetinaFace; return (x1, y1, x2, y2, 5-point landmarks) per face."""
         blob, sx, sy = _preprocess_det(img_bgr)
         input_name = self._det_sess.get_inputs()[0].name
         outputs = [
@@ -428,7 +495,7 @@ class FaceRecognizer:
         if not faces:
             return None
         best = max(faces, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
-        face = _align_face(img_bgr, *best)
+        face = _best_face_crop(img_bgr, best)
         if face is None:
             return None
         return self._embed(face)
@@ -461,7 +528,7 @@ class FaceRecognizer:
             return "Unknown", 0.0
 
         best_face_box = max(faces, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
-        face = _align_face(crop, *best_face_box)
+        face = _best_face_crop(crop, best_face_box)
         if face is None:
             return "Unknown", 0.0
 
