@@ -34,6 +34,8 @@ animals/
 # ── Generated / runtime files ────────────────────────────────────────────────
 alert_*.jpg
 *.log
+runs/
+.python_packages/
 
 # ── User-specific config (use config.example.yaml as template) ──────────────
 config.yaml
