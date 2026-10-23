@@ -12,6 +12,7 @@ pi:
   host: "camera.example.invalid"          # Replace with your Pi's IP address
   video_port: 8888
   ws_port: 8889
+  auth_token: ""                 # Must match server.auth_token below (empty = no auth)
   default_resolution: [640, 480]
   fps_min: 5
   fps_max: 30
@@ -20,6 +21,7 @@ pi:
 server:
   video_port: 8888
   ws_port: 8889
+  auth_token: ""                 # Shared secret required in WebSocket control messages
   default_width: 640
   default_height: 480
   default_fps: 30
@@ -36,6 +38,11 @@ ai:
   animal_history_len: 5
   detection_classes: [0, 15, 16]
   iou_threshold: 0.4
+  person_class: 0                # COCO class id used for face recognition
+  animal_classes: [15, 16]       # COCO class ids used for animal recognition
+  face_recheck_interval: 10      # Re-identify a tracked person every N frames
+  animal_recheck_interval: 10    # Re-identify a tracked animal every N frames
+  max_cached_models: 2           # Max YOLO/SAM models kept in VRAM at once
 
 alerts:
   cooldown_seconds: 300
@@ -55,7 +62,9 @@ stream:
 ui:
   server_host: "127.0.0.1"
   server_port: 7860
-  share: true
+  share: false                   # true exposes the app on a public gradio.live URL!
+  auth_username: ""              # Set both fields (or CAMERA__UI__AUTH_PASSWORD env
+  auth_password: ""              # var) to protect the UI with a login
   log_max_lines: 20
   log_refresh_interval: 1
 

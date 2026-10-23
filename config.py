@@ -35,6 +35,7 @@ class PiSettings:
     host: str = "camera.example.invalid"
     video_port: int = 8888
     ws_port: int = 8889
+    auth_token: str = ""
     default_resolution: list[int] = field(default_factory=lambda: [640, 480])
     fps_min: int = 5
     fps_max: int = 30
@@ -53,6 +54,7 @@ class PiSettings:
 class ServerSettings:
     video_port: int = 8888
     ws_port: int = 8889
+    auth_token: str = ""
     default_width: int = 640
     default_height: int = 480
     default_fps: int = 30
@@ -71,6 +73,11 @@ class AISettings:
     animal_history_len: int = 5
     detection_classes: list[int] = field(default_factory=lambda: [0, 15, 16])
     iou_threshold: float = 0.4
+    person_class: int = 0
+    animal_classes: list[int] = field(default_factory=lambda: [15, 16])
+    face_recheck_interval: int = 10
+    animal_recheck_interval: int = 10
+    max_cached_models: int = 2
 
 
 @dataclass
@@ -109,7 +116,9 @@ class StreamSettings:
 class UISettings:
     server_host: str = "127.0.0.1"
     server_port: int = 7860
-    share: bool = True
+    share: bool = False
+    auth_username: str = ""
+    auth_password: str = ""
     log_max_lines: int = 20
     log_refresh_interval: int = 1
 

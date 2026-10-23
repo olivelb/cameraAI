@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess
 import sys
 import time
@@ -70,45 +69,71 @@ def apply_windows_boost() -> None:
         log.warning("Could not activate Windows boost: %s", e)
 
 
+def _listening_pids(netstat_output: str, port: int, own_pid: int) -> list[str]:
+    """Parse `netstat -ano` output; return PIDs LISTENING on `port`.
+
+    Only TCP lines in LISTENING state whose *local* address ends with the
+    exact port are considered, so ESTABLISHED connections to/from the port
+    (e.g. a browser) are never matched. The caller's own PID is excluded.
+    """
+    pids: list[str] = []
+    for line in netstat_output.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        local_addr, state, pid = parts[1], parts[3], parts[4]
+        if state.upper() != "LISTENING":
+            continue
+        if local_addr.rsplit(":", 1)[-1] != str(port):
+            continue
+        if pid == str(own_pid):
+            continue
+        pids.append(pid)
+    return pids
+
+
 def cleanup_port(port: int) -> None:
-    """Kill stale processes holding a port (Windows only).
+    """Kill stale listeners holding a port (Windows only).
 
     Used to reclaim port 7860 on startup when a previous instance
-    didn't shut down cleanly.
+    didn't shut down cleanly. Only processes actually LISTENING on the
+    exact port are targeted — never the current process, never clients
+    with established connections.
     """
     if sys.platform != "win32":
         return
 
-    log.info("Checking for stale processes on port %d...", port)
+    log.info("Checking for stale listeners on port %d...", port)
     try:
         # Kill stray Gradio tunnel binaries
         subprocess.run(
-            "taskkill /IM frpc_windows_amd64_v0.3.exe /F",
-            shell=True,
+            ["taskkill", "/IM", "frpc_windows_amd64_v0.3.exe", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
-        # Find and kill processes blocking the port
-        result = subprocess.check_output(
-            f"netstat -ano | findstr :{port}", shell=True
-        ).decode()
+        # Find processes listening on the port and kill them
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
 
-        for line in result.strip().split("\n"):
-            parts = re.split(r"\s+", line.strip())
-            if len(parts) > 4:
-                pid = parts[-1]
-                if pid != "0":
-                    log.warning("Killing stale process (PID %s) on port %d", pid, port)
-                    subprocess.run(
-                        f"taskkill /F /PID {pid}",
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+        pids = _listening_pids(result, port, os.getpid())
+        if not pids:
+            return
+
+        for pid in pids:
+            log.warning("Killing stale listener (PID %s) on port %d", pid, port)
+            subprocess.run(
+                ["taskkill", "/F", "/PID", pid],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
         time.sleep(1)  # Let OS release the port
-    except subprocess.CalledProcessError:
-        pass  # Port is likely free
+    except FileNotFoundError:
+        pass  # netstat/taskkill unavailable — nothing to clean
     except Exception as e:
         log.debug("Port cleanup error: %s", e)

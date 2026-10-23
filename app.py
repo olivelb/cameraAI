@@ -112,16 +112,20 @@ if os.path.exists(_CONFIG_FILE):
 def save_email_settings(
     enabled: bool, sender: str, password: str, receiver: str
 ) -> str:
-    """Save email alert settings to disk with encrypted password."""
+    """Save email alert settings to disk with encrypted password.
+
+    An empty password field keeps the previously stored password.
+    """
     global email_config
+    new_password = password if password else email_config.get("password", "")
     encrypted_password = ""
-    if password:
-        encrypted_password = _cipher.encrypt(password.encode()).decode()
+    if new_password:
+        encrypted_password = _cipher.encrypt(new_password.encode()).decode()
 
     email_config = {
         "enabled": enabled,
         "sender": sender,
-        "password": password,
+        "password": new_password,
         "receiver": receiver,
     }
 
@@ -231,8 +235,11 @@ def _send_ws(data: dict, label: str = "") -> str:
     """Open a fresh WebSocket connection, send data, close."""
     ui_log(f"📡 Sending {label}...")
     try:
+        payload = dict(data)
+        if cfg.pi.auth_token:
+            payload["token"] = cfg.pi.auth_token
         conn = create_connection(cfg.pi.ws_url, timeout=3)
-        conn.send(json.dumps(data))
+        conn.send(json.dumps(payload))
         conn.close()
         ui_log(f"✅ Sent {label}")
         return f"Sent {label}"
@@ -311,8 +318,8 @@ def read_stream() -> None:
         if cap is not None:
             try:
                 cap.release()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Error releasing previous capture: %s", e)
         ui_log("🖥️ Connecting to Pi camera server...")
         cap = cv2.VideoCapture(cfg.pi.video_url)
         fail_count = 0
@@ -726,7 +733,7 @@ with gr.Blocks(title="AI Vision", theme=gr.themes.Base()) as demo:
                 email_password = gr.Textbox(
                     label="App Password",
                     type="password",
-                    value=email_config["password"],
+                    placeholder="Leave empty to keep the stored password",
                 )
                 email_receiver = gr.Textbox(
                     label="Receiver Email", value=email_config["receiver"]
@@ -826,18 +833,37 @@ if __name__ == "__main__":
     # Check for SSL certs
     ssl_cert = "cert.pem" if os.path.exists("cert.pem") else None
     ssl_key = "key.pem" if os.path.exists("key.pem") else None
+    ssl_kwargs = {}
+    if ssl_cert and ssl_key:
+        ssl_kwargs = {"ssl_certfile": ssl_cert, "ssl_keyfile": ssl_key}
+    scheme = "https" if ssl_kwargs else "http"
+
+    # Optional UI login — strongly recommended when exposing the app
+    auth = None
+    if cfg.ui.auth_username and cfg.ui.auth_password:
+        auth = (cfg.ui.auth_username, cfg.ui.auth_password)
+    elif cfg.ui.share:
+        log.error(
+            "ui.share is ENABLED but no auth_username/auth_password is "
+            "configured — the app (live camera feed included) will be "
+            "reachable by anyone holding the public link!"
+        )
 
     print("\n" + "=" * 50)
     print("🚀  SERVER STARTING  🚀")
-    print(f"📱  Local URL: http://localhost:{cfg.ui.server_port}")
-    print("🌍  Internet URL: (Wait for Gradio link below)")
+    print(f"📱  Local URL: {scheme}://localhost:{cfg.ui.server_port}")
+    print(f"🌍  Network URL: {scheme}://{local_ip}:{cfg.ui.server_port}")
+    print(f"🔐  Login: {'enabled' if auth else 'DISABLED'} | "
+          f"Public share: {'ON' if cfg.ui.share else 'off'}")
     print("=" * 50 + "\n")
 
     app_server, _, _ = demo.launch(
         server_name=cfg.ui.server_host,
         server_port=cfg.ui.server_port,
         share=cfg.ui.share,
+        auth=auth,
         prevent_thread_lock=True,
+        **ssl_kwargs,
     )
 
     # Attach MJPEG stream endpoint
