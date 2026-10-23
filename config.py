@@ -66,7 +66,7 @@ class ServerSettings:
 class AISettings:
     default_model: str = "yolo26n.pt"
     vlm_model_id: str = "google/gemma-4-E2B-it"
-    animal_embed_model: str = "facebook/dinov3-small"
+    animal_embed_model: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
     face_threshold: float = 0.35
     animal_threshold: float = 0.85
     face_history_len: int = 5

@@ -101,7 +101,7 @@ All settings are in `config.yaml`. Key options:
 | `pi.auth_token` / `server.auth_token` | Shared secret for the Pi WebSocket control channel | `""` (no auth) |
 | `ai.default_model` | Default YOLO model | `yolo26n.pt` |
 | `ai.vlm_model_id` | VLM for scene description | `google/gemma-4-E2B-it` |
-| `ai.animal_embed_model` | Animal embedding model | `facebook/dinov3-small` |
+| `ai.animal_embed_model` | Animal embedding model | `facebook/dinov3-vits16-pretrain-lvd1689m` |
 | `ai.person_class` / `ai.animal_classes` | COCO ids driving face/animal recognition | `0` / `[15, 16]` |
 | `ai.face_recheck_interval` / `animal_recheck_interval` | Re-identify each tracked subject every N frames | `10` |
 | `ai.max_cached_models` | Max models kept loaded (VRAM bound) | `2` |
