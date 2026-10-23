@@ -41,6 +41,7 @@ try:
     _VIDEO_PORT = cfg.server.video_port
     _WS_PORT = cfg.server.ws_port
     _PID_FILE = cfg.server.pid_file
+    _AUTH_TOKEN = cfg.server.auth_token
     _DEFAULT_SETTINGS = {
         "width": cfg.server.default_width,
         "height": cfg.server.default_height,
@@ -53,6 +54,7 @@ except ImportError:
     _VIDEO_PORT = 8888
     _WS_PORT = 8889
     _PID_FILE = "/tmp/camera_server.pid"
+    _AUTH_TOKEN = ""
     _DEFAULT_SETTINGS = {
         "width": 640,
         "height": 480,
@@ -83,6 +85,12 @@ def acquire_pid_lock() -> None:
             sys.exit(1)
         except (ProcessLookupError, ValueError):
             log.warning("Stale PID file found. Cleaning up.")
+        except PermissionError:
+            log.error(
+                "PID file references a process owned by another user — "
+                "refusing to start a second instance. Exiting."
+            )
+            sys.exit(1)
 
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
@@ -106,7 +114,7 @@ _stream_lock = _threading.Lock()
 _stream_process: subprocess.Popen | None = None
 
 
-def build_rpicam_cmd() -> str:
+def build_rpicam_cmd() -> list[str]:
     """Build the rpicam-vid command optimized for the Pi.
 
     Key optimizations:
@@ -117,6 +125,8 @@ def build_rpicam_cmd() -> str:
       --flush         No OS buffering latency
       --intra 2*fps   Keyframe every 2s — fewer expensive I-frames
       nice -n -10     Raises scheduling priority
+
+    Returns an argument list (executed without a shell).
     """
     w = settings["width"]
     h = settings["height"]
@@ -124,24 +134,24 @@ def build_rpicam_cmd() -> str:
     br = settings["bitrate"]
     intra = fps * 2
 
-    return (
-        f"nice -n -10 rpicam-vid"
-        f" --nopreview"
-        f" --width {w}"
-        f" --height {h}"
-        f" --framerate {fps}"
-        f" --bitrate {br}"
-        f" --profile baseline"
-        f" --level 4"
-        f" --codec h264"
-        f" --inline"
-        f" --flush"
-        f" --denoise off"
-        f" --intra {intra}"
-        f" -t 0"
-        f" -o tcp://0.0.0.0:{_VIDEO_PORT}"
-        f" --listen"
-    )
+    return [
+        "nice", "-n", "-10", "rpicam-vid",
+        "--nopreview",
+        "--width", str(w),
+        "--height", str(h),
+        "--framerate", str(fps),
+        "--bitrate", str(br),
+        "--profile", "baseline",
+        "--level", "4",
+        "--codec", "h264",
+        "--inline",
+        "--flush",
+        "--denoise", "off",
+        "--intra", str(intra),
+        "-t", "0",
+        "-o", f"tcp://0.0.0.0:{_VIDEO_PORT}",
+        "--listen",
+    ]
 
 
 def _kill_process(proc: subprocess.Popen) -> None:
@@ -185,7 +195,6 @@ def _watchdog() -> None:
                 )
                 _stream_process = subprocess.Popen(
                     cmd,
-                    shell=True,
                     preexec_fn=os.setsid,
                     stderr=subprocess.DEVNULL,
                 )
@@ -243,6 +252,13 @@ async def handle_client(websocket) -> None:
             if msg.get("type") != "update_settings":
                 continue
 
+            if _AUTH_TOKEN and msg.get("token") != _AUTH_TOKEN:
+                log.warning(
+                    "update_settings from %s rejected: missing or invalid token",
+                    client,
+                )
+                continue
+
             updates = msg.get("data", {})
             changed = False
 
@@ -260,17 +276,21 @@ async def handle_client(websocket) -> None:
                     continue
                 pending[key] = value
 
-            # Validate resolution pair
-            if "width" in pending and "height" in pending:
-                pair = (pending["width"], pending["height"])
+            # Validate the resulting resolution pair, even when only one
+            # dimension is updated (merge pending over current settings)
+            if "width" in pending or "height" in pending:
+                pair = (
+                    pending.get("width", settings["width"]),
+                    pending.get("height", settings["height"]),
+                )
                 if pair not in _VALID_RESOLUTIONS:
                     log.warning(
                         "Invalid resolution %dx%d — not a native mode. Ignored.",
                         pair[0],
                         pair[1],
                     )
-                    pending.pop("width")
-                    pending.pop("height")
+                    pending.pop("width", None)
+                    pending.pop("height", None)
 
             for key, value in pending.items():
                 if settings[key] != value:
@@ -280,6 +300,14 @@ async def handle_client(websocket) -> None:
 
             if changed:
                 start_stream()
+
+            # Ack with the authoritative settings so the client can resync
+            try:
+                await websocket.send(
+                    json.dumps({"type": "current_settings", "data": settings})
+                )
+            except Exception as e:
+                log.warning("Could not send settings ack to %s: %s", client, e)
 
     except websockets.exceptions.ConnectionClosed:
         log.info("Client disconnected: %s", client)
