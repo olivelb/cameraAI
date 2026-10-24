@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import logging
 import math
+import re
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +117,24 @@ class StreamSettings:
     capture_read_timeout_ms: int = 3000
 
 
+NETWORK_PROFILE_IDS = {"current", "local", "vpn", "tailscale"}
+
+
+@dataclass
+class ConnectionProfile:
+    host: str
+    video_port: int = 8888
+    ws_port: int = 8889
+    open_timeout_ms: int = 12000
+    read_timeout_ms: int = 10000
+
+
+@dataclass
+class DesktopSettings:
+    active_profile: str = "current"
+    profiles: dict[str, dict[str, str | int]] = field(default_factory=dict)
+
+
 @dataclass
 class UISettings:
     server_host: str = "127.0.0.1"
@@ -157,6 +176,7 @@ class Settings:
     stream: StreamSettings = field(default_factory=StreamSettings)
     ui: UISettings = field(default_factory=UISettings)
     camera: CameraSettings = field(default_factory=CameraSettings)
+    desktop: DesktopSettings = field(default_factory=DesktopSettings)
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────
@@ -218,6 +238,28 @@ def _matches_type(value: Any, expected: Any) -> bool:
     return type(value) is expected
 
 
+def validate_connection_profile(values: dict) -> ConnectionProfile:
+    """Validate a saved endpoint without echoing its private values in errors."""
+    if not isinstance(values, dict) or set(values) - ConnectionProfile.__dataclass_fields__.keys():
+        raise ValueError("Invalid connection profile fields")
+    try:
+        profile = ConnectionProfile(**values)
+    except TypeError:
+        raise ValueError("Connection profile requires a host") from None
+    for key, kind in get_type_hints(ConnectionProfile).items():
+        if not _matches_type(getattr(profile, key), kind):
+            raise ValueError(f"Invalid connection profile type: {key}")
+    if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?", profile.host):
+        raise ValueError("Indique une adresse IPv4 ou un nom d’hôte, sans http:// ni port")
+    if not all(1 <= port <= 65535 for port in (profile.video_port, profile.ws_port)):
+        raise ValueError("Connection profile ports must be in [1, 65535]")
+    if profile.video_port == profile.ws_port:
+        raise ValueError("Les ports vidéo et commandes doivent être différents")
+    if not all(1000 <= delay <= 60000 for delay in (profile.open_timeout_ms, profile.read_timeout_ms)):
+        raise ValueError("Connection profile timeouts must be in [1000, 60000]")
+    return profile
+
+
 def validate_settings(settings: Settings) -> None:
     """Reject invalid types/ranges before they reach sockets, threads or models."""
     for section in Settings.__dataclass_fields__:
@@ -265,6 +307,15 @@ def validate_settings(settings: Settings) -> None:
         raise ValueError("Set both ui.auth_username and ui.auth_password")
     if settings.ui.share and not settings.ui.auth_username:
         raise ValueError("Public sharing requires ui.auth_username and ui.auth_password")
+    if settings.desktop.active_profile not in NETWORK_PROFILE_IDS:
+        raise ValueError("Unknown desktop network profile")
+    for profile_id, values in settings.desktop.profiles.items():
+        if profile_id not in NETWORK_PROFILE_IDS - {"current"}:
+            raise ValueError("Unknown saved network profile")
+        validate_connection_profile(values)
+    if (settings.desktop.active_profile != "current" and
+            settings.desktop.active_profile not in settings.desktop.profiles):
+        raise ValueError("Active desktop profile has no saved connection")
 
 
 def load_settings() -> Settings:

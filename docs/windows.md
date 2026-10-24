@@ -54,7 +54,7 @@ Les erreurs apparaissent dans la barre d’état et le journal. SAM3 et Gemma pe
 se concurrencer pour la mémoire GPU ; le comportement de libération de SAM3 est
 celui du moteur commun. Les alertes sont désactivées à chaque démarrage.
 
-## Réseau local et WireGuard
+## Profils réseau : local, VPN et Tailscale
 
 Configurer l’adresse accessible depuis le réseau utilisé :
 
@@ -63,13 +63,40 @@ Configurer l’adresse accessible depuis le réseau utilisé :
   éventuelles redirections de ports de l’installation ;
 - les ports par défaut sont **8888** pour la vidéo et **8889** pour les commandes ;
 - le profil **VPN / réseau mobile** propose 12 s pour ouvrir et 10 s pour lire ;
+- le profil **Tailscale** propose 12 s pour ouvrir et 10 s pour lire ;
 - le profil **Réseau local** propose 10 s pour ouvrir et 3 s pour lire.
 
-Sélectionner un profil remplit les champs. **Enregistrer et reconnecter** valide
-et sauvegarde la connexion dans `config.yaml`, puis relance la réception.
+Chaque profil mémorise son adresse, ses ports et ses délais. Sélectionner un
+profil remplit les champs à partir de sa sauvegarde locale ; un nouveau profil
+demande une adresse au lieu de reprendre celle d’un autre réseau.
+**Enregistrer et reconnecter** valide et sauvegarde la connexion et le profil
+dans `config.yaml`, puis relance la réception. Le dernier profil enregistré
+est restauré au démarrage. Le jeton de contrôle reste commun à la caméra et
+n’est pas dupliqué dans chaque profil.
 Un délai plus long tolère davantage de pauses mais retarde la détection d’une
 coupure ; il ne garantit ni débit supérieur ni faible latence vidéo.
-Les profils ne configurent ni ne démarrent WireGuard : activer le VPN séparément.
+Les profils ne configurent ni ne démarrent WireGuard ou Tailscale : activer le
+client VPN séparément.
+
+Pour Tailscale :
+
+1. Connecter le PC et la caméra à Tailscale, avec les droits réseau nécessaires.
+2. Choisir **Tailscale**, puis **Détecter les appareils Tailscale…** et sélectionner
+   la caméra. La liste vient de `tailscale status --json`, lu localement en
+   arrière-plan. L’adresse IPv4 est privilégiée pour ne pas dépendre de MagicDNS.
+3. Une adresse ou un nom MagicDNS peut aussi être saisi manuellement.
+4. Cliquer sur **Enregistrer et reconnecter**.
+
+Les appareils détectés ne sont pas journalisés. Les noms, adresses, profils et
+jetons restent dans la configuration locale ignorée par Git ; ne jamais les
+recopier dans les sources ou dans `config.example.yaml`. Les tests de confidentialité
+contrôlent aussi les adresses partagées utilisées par Tailscale et les domaines
+MagicDNS. La détection ne change ni le compte Tailscale, ni les routes, ni les ACL.
+Si aucun appareil n’est trouvé, vérifier la connexion Tailscale et les permissions,
+ou saisir la cible manuellement.
+
+Références : [connexion entre appareils Tailscale](https://tailscale.com/docs/how-to/connect-to-devices)
+et [commande status](https://tailscale.com/kb/1080/cli).
 
 Option de décodage à essayer : `SmartCamera.exe --low-latency`. Elle transmet
 au décodeur des limites de sondage et les options `nobuffer` / `low_delay` avant

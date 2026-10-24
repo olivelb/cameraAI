@@ -8,6 +8,12 @@
 #   CAMERA__AI__DEFAULT_MODEL=yolo26s.pt  →  ai.default_model = "yolo26s.pt"
 # ──────────────────────────────────────────────────────────────────────────────
 
+desktop:
+  active_profile: "current"
+  # The native app saves endpoints only in the ignored local config.yaml.
+  # Never put personal network details in this distributed example.
+  profiles: {}
+
 pi:
   host: "camera.example.invalid"          # Replace with your Pi's IP address
   video_port: 8888

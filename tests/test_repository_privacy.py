@@ -36,7 +36,7 @@ def test_no_private_network_addresses_in_published_files():
                 address = ipaddress.ip_address(match.group())
             except ValueError:
                 continue
-            if (address.is_private and not address.is_loopback and not address.is_unspecified
+            if (not address.is_global and not address.is_loopback and not address.is_unspecified
                     and not any(address in block for block in examples)):
                 violations.append(name)
     assert not violations, f"Private addresses in: {sorted(set(violations))}"
@@ -46,10 +46,11 @@ def test_no_personal_email_or_user_home_paths_in_published_files():
     violations = []
     email = re.compile(r"[\w.!#$%&'*+/=?^`{|}~-]+@([\w-]+(?:\.[\w-]+)+)")
     home = re.compile(r"/home/[A-Za-z0-9_.-]+|[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^/\\\s]+")
+    tailnet = re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9.-]*\.ts\.net\b")
     for name, text in published_text_files():
         domains = [match.group(1).lower() for match in email.finditer(text)]
         if any(not domain.endswith((".test", ".invalid", ".example", "example.com", "example.org", "example.net"))
-               for domain in domains) or home.search(text):
+               for domain in domains) or home.search(text) or tailnet.search(text):
             violations.append(name)
     assert not violations, f"Personal email or home paths in: {sorted(set(violations))}"
 
@@ -58,3 +59,11 @@ def test_camera_defaults_are_explicit_placeholders():
     example = Path(__file__).resolve().parents[1] / "config.example.yaml"
     assert PiSettings().host.endswith(".invalid")
     assert yaml.safe_load(example.read_text(encoding="utf-8"))["pi"]["host"] == PiSettings().host
+
+
+def test_private_settings_and_diagnostics_are_not_published():
+    forbidden = {"config.yaml", "email_config.json", ".secret.key"}
+    violations = [name for name, _ in published_text_files()
+                  if Path(name).name in forbidden or name.startswith(".audit-tmp/")
+                  or Path(name).name.startswith((".connection-", ".profile-", ".email-"))]
+    assert not violations, f"Private files are published: {violations}"

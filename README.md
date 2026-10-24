@@ -144,6 +144,8 @@ directory before enabling the systemd service.
 | Setting | Description | Default |
 |---|---|---|
 | `pi.host` | Raspberry Pi IP address | `camera.example.invalid` |
+| `desktop.profiles` | Locally saved desktop endpoints: LAN, VPN and Tailscale | `{}` |
+| `desktop.active_profile` | Last saved desktop network profile | `current` |
 | `pi.auth_token` / `server.auth_token` | Shared secret for the Pi WebSocket control channel | `""` (no auth) |
 | `ai.default_model` | Default YOLO model | `yolo26n.pt` |
 | `ai.vlm_model_id` | VLM for scene description | `google/gemma-4-E2B-it` |

@@ -108,3 +108,18 @@ def test_load_rejects_unknown_or_malformed_yaml(tmp_path, monkeypatch):
         path.write_text(source, encoding="utf-8")
         with pytest.raises(ValueError):
             config.load_settings()
+
+
+@pytest.mark.parametrize("profile", [
+    {"host": "camera.example.invalid", "video_port": True},
+    {"host": "camera.example.invalid", "video_port": 70000},
+    {"host": "camera.example.invalid", "open_timeout_ms": 0},
+    {"host": "camera.example.invalid", "read_timeout_ms": 61000},
+    {"host": "camera.example.invalid", "auth_token": "fixture"},
+    {"host": "http://invalid/"}, {},
+])
+def test_invalid_saved_connection_profiles_are_rejected(profile):
+    settings = config.Settings()
+    settings.desktop.profiles["tailscale"] = profile
+    with pytest.raises(ValueError):
+        config.validate_settings(settings)

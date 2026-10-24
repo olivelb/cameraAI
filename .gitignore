@@ -47,6 +47,9 @@ runs/
 
 # ── User-specific config (use config.example.yaml as template) ──────────────
 config.yaml
+.connection-*.yaml
+.profile-*.yaml
+.email-*.json
 
 # ── AI assistant context (local only) ───────────────────────────────────────
 GEMINI.md

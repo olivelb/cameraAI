@@ -17,6 +17,8 @@ from PySide6.QtWidgets import QApplication
 import camera_core as core
 import desktop_backend as backend
 from desktop import CameraWindow, frame_image
+import desktop as desktop_module
+from config import Settings
 
 
 @pytest.fixture(scope="module")
@@ -135,6 +137,97 @@ def test_connection_save_is_validated_atomic_and_preserves_other_settings(tmp_pa
         backend.save_connection("198.51.100.30", 8888, 8889, "fixture", 7000, 3000, path=path)
     assert candidate.pi.host == "192.0.2.10"
     assert path.read_bytes() == previous
+
+
+def test_network_profiles_save_atomically_without_copying_tokens(tmp_path, monkeypatch):
+    settings = Settings()
+    monkeypatch.setattr(backend, "cfg", settings)
+    path = tmp_path / "config.yaml"
+    path.write_text("ai:\n  default_model: custom.pt\n", encoding="utf-8")
+    backend.save_connection("camera.example.invalid", 8888, 8889, "fixture", 12000, 10000,
+                            path=path, profile_id="tailscale")
+    saved = yaml.safe_load(path.read_text())
+    assert saved["desktop"]["active_profile"] == "tailscale"
+    assert saved["desktop"]["profiles"]["tailscale"]["host"] == "camera.example.invalid"
+    assert "auth_token" not in saved["desktop"]["profiles"]["tailscale"]
+    previous = path.read_bytes()
+
+    def fail(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(backend.os, "replace", fail)
+    with pytest.raises(OSError):
+        backend.save_connection("192.0.2.10", 8888, 8889, "fixture", 10000, 3000,
+                                path=path, profile_id="local")
+    assert path.read_bytes() == previous
+    assert settings.desktop.active_profile == "tailscale"
+    assert "local" not in settings.desktop.profiles
+
+
+def test_tailscale_profile_switch_restores_endpoint_and_leaves_other_profiles_intact(window, monkeypatch):
+    settings = Settings()
+    settings.desktop.profiles = {
+        "local": {"host": "192.0.2.10", "video_port": 9000, "ws_port": 9001},
+        "tailscale": {"host": "camera.example.invalid", "open_timeout_ms": 15000, "read_timeout_ms": 9000},
+    }
+    monkeypatch.setattr(desktop_module, "cfg", settings)
+    window.network_profile.setCurrentText("Tailscale")
+    assert window.host.text() == "camera.example.invalid"
+    assert window.open_timeout.value() == 15000
+    assert window.tailscale_button.isVisible()
+    window.network_profile.setCurrentText("Réseau local")
+    assert window.host.text() == "192.0.2.10"
+    assert window.video_port.value() == 9000
+    assert not window.tailscale_button.isVisible()
+    window.network_profile.setCurrentText("Tailscale")
+    assert window.host.text() == "camera.example.invalid"
+    assert settings.desktop.profiles["local"]["video_port"] == 9000
+
+
+def test_unconfigured_tailscale_profile_never_reuses_gateway_address(window, monkeypatch):
+    monkeypatch.setattr(desktop_module, "cfg", Settings())
+    window.network_profile.setCurrentText("Tailscale")
+    assert window.host.text() == ""
+    assert window.open_timeout.value() == 12000
+    assert window.read_timeout.value() == 10000
+
+
+def test_tailscale_discovery_prefers_ipv4_and_excludes_self(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    executable = tmp_path / "tailscale.exe"
+    executable.touch()
+    monkeypatch.setattr(backend.shutil, "which", lambda name: str(executable))
+    response = {"BackendState": "Running", "Self": {"HostName": "this-client"}, "Peer": {
+        "one": {"HostName": "camera", "DNSName": "camera.example.invalid.",
+                "TailscaleIPs": ["::1", "192.0.2.20"], "Online": True},
+        "two": {"HostName": "other", "DNSName": "other.example.invalid.", "Online": False},
+    }}
+    calls = []
+
+    def run(command, **options):
+        calls.append((command, options))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(response))
+
+    monkeypatch.setattr(backend.subprocess, "run", run)
+    devices = backend.tailscale_devices()
+    assert devices == [{"name": "camera", "host": "192.0.2.20", "online": True},
+                       {"name": "other", "host": "other.example.invalid", "online": False}]
+    assert calls[0][0][1:] == ["status", "--json"]
+    assert calls[0][1]["timeout"] == 10
+
+
+def test_tailscale_discovery_errors_do_not_echo_cli_private_output(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    executable = tmp_path / "tailscale.exe"
+    executable.touch()
+    monkeypatch.setattr(backend.shutil, "which", lambda name: str(executable))
+    monkeypatch.setattr(backend.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+        returncode=1, stdout="", stderr="private-fixture-device"))
+    with pytest.raises(ValueError) as failure:
+        backend.tailscale_devices()
+    assert "private-fixture-device" not in str(failure.value)
 
 
 def test_camera_does_not_report_rejected_update_as_success(monkeypatch):

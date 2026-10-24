@@ -16,18 +16,24 @@ from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPlainTextEdit,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QPlainTextEdit,
     QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget, QTextBrowser,
     QVBoxLayout, QWidget,
 )
 
 import camera_core as core
 from config import cfg
-from desktop_backend import CommandWorker, camera_settings, restart_camera, save_connection
+from desktop_backend import CommandWorker, camera_settings, restart_camera, save_connection, tailscale_devices
 from platform_utils import apply_windows_boost
 
 ROOT = Path(__file__).resolve().parent
 log = logging.getLogger(__name__)
+NETWORK_PRESETS = {
+    "Réglages actuels": ("current", None, None),
+    "Réseau local": ("local", 10000, 3000),
+    "VPN / réseau mobile": ("vpn", 12000, 10000),
+    "Tailscale": ("tailscale", 12000, 10000),
+}
 
 STYLE = """
 QMainWindow, QWidget { background:#101724; color:#e4eaf3; font:10pt 'Segoe UI'; }
@@ -239,7 +245,7 @@ class CameraWindow(QMainWindow):
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
         self.open_timeout = self.number(1000, 60000, cfg.stream.capture_open_timeout_ms, step=1000)
         self.read_timeout = self.number(1000, 60000, cfg.stream.capture_read_timeout_ms, step=1000)
-        self.network_profile = self.combo(["Réglages actuels", "Réseau local", "VPN / réseau mobile"])
+        self.network_profile = self.combo(list(NETWORK_PRESETS))
         self.network_profile.currentTextChanged.connect(self.select_network_profile)
         form.addRow("Profil réseau", self.network_profile)
         for title, widget in (("Adresse du Pi / routeur", self.host), ("Port vidéo", self.video_port),
@@ -247,6 +253,9 @@ class CameraWindow(QMainWindow):
                               ("Attente connexion (ms)", self.open_timeout), ("Attente lecture (ms)", self.read_timeout)):
             form.addRow(title, widget)
         layout.addLayout(form)
+        self.tailscale_button = self.button("Détecter les appareils Tailscale…", self.detect_tailscale)
+        self.tailscale_button.setVisible(False)
+        layout.addWidget(self.tailscale_button)
         layout.addWidget(self.button("Enregistrer et reconnecter", self.connect_camera, primary=True))
         layout.addWidget(self.button("Lire les réglages du Pi", self.read_settings))
         layout.addWidget(self.button("Relancer le flux du Pi", lambda: self.run("Relance du flux", restart_camera, self.settings_received)))
@@ -262,6 +271,8 @@ class CameraWindow(QMainWindow):
         layout.addWidget(self.button("Appliquer au Pi", self.apply_camera, primary=True))
         layout.addWidget(self.note("L’application de ces trois réglages redémarre le flux vidéo. La reconnexion est automatique. Les réglages du Pi sont ceux de la session courante."))
         layout.addStretch()
+        active = next(label for label, values in NETWORK_PRESETS.items() if values[0] == cfg.desktop.active_profile)
+        self.network_profile.setCurrentText(active)
 
     def _ai_page(self):
         layout = self.page("IA")
@@ -393,7 +404,10 @@ class CameraWindow(QMainWindow):
             core.ui_log(message)
             self.statusBar().showMessage(message)
         else:
-            message = str(result.value) if result.value is not None else "Terminé"
+            if result.label == "Appareils Tailscale":
+                message = f"{len(result.value)} appareil(s) détecté(s)"
+            else:
+                message = str(result.value) if result.value is not None else "Terminé"
             self.statusBar().showMessage(f"{result.label} : {message[:240]}")
             if result.label != "Analyse de l’image":
                 core.ui_log(f"{result.label} : {message[:500]}")
@@ -405,21 +419,55 @@ class CameraWindow(QMainWindow):
     def connect_camera(self):
         values = (self.host.text(), self.video_port.value(), self.ws_port.value(),
                   self.token.text(), self.open_timeout.value(), self.read_timeout.value())
+        profile_id = NETWORK_PRESETS[self.network_profile.currentText()][0]
 
         def connect():
-            message = save_connection(*values)
+            message = save_connection(*values, profile_id=profile_id)
             core._RECONNECT.set()
             return message
 
         self.run("Connexion caméra", connect)
 
     def select_network_profile(self, profile):
-        if profile == "Réseau local":
-            self.open_timeout.setValue(10000)
-            self.read_timeout.setValue(3000)
-        elif profile == "VPN / réseau mobile":
-            self.open_timeout.setValue(12000)
-            self.read_timeout.setValue(10000)
+        profile_id, opening, reading = NETWORK_PRESETS[profile]
+        self.tailscale_button.setVisible(profile_id == "tailscale")
+        saved = cfg.desktop.profiles.get(profile_id)
+        if saved:
+            self.host.setText(saved["host"])
+            self.video_port.setValue(saved.get("video_port", 8888))
+            self.ws_port.setValue(saved.get("ws_port", 8889))
+            self.open_timeout.setValue(saved.get("open_timeout_ms", opening))
+            self.read_timeout.setValue(saved.get("read_timeout_ms", reading))
+        elif profile_id == "current":
+            self.host.setText(cfg.pi.host)
+            self.video_port.setValue(cfg.pi.video_port)
+            self.ws_port.setValue(cfg.pi.ws_port)
+            self.open_timeout.setValue(cfg.stream.capture_open_timeout_ms)
+            self.read_timeout.setValue(cfg.stream.capture_read_timeout_ms)
+        else:
+            self.host.clear()
+            self.host.setPlaceholderText("Adresse IPv4 ou nom MagicDNS" if profile_id == "tailscale" else "Adresse de la caméra pour ce profil")
+            self.video_port.setValue(8888)
+            self.ws_port.setValue(8889)
+            self.open_timeout.setValue(opening)
+            self.read_timeout.setValue(reading)
+        if profile_id == "tailscale":
+            self.statusBar().showMessage("Tailscale doit être actif sur ce PC et la caméra. Les adresses restent dans config.yaml, hors Git.")
+
+    def detect_tailscale(self):
+        def choose(devices):
+            if self._closing:
+                return
+            if not devices:
+                self.statusBar().showMessage("Aucun appareil Tailscale trouvé. Tu peux saisir l’adresse manuellement.")
+                return
+            labels = [f"{device['name']} — {device['host']} — {'en ligne' if device['online'] else 'hors ligne'}" for device in devices]
+            label, accepted = QInputDialog.getItem(self, "Appareils Tailscale — données locales", "Choisir la caméra", labels, 0, False)
+            if accepted:
+                self.host.setText(devices[labels.index(label)]["host"])
+                self.statusBar().showMessage("Adresse sélectionnée. Clique sur Enregistrer et reconnecter pour l’utiliser.")
+
+        self.run("Appareils Tailscale", tailscale_devices, choose)
 
     def settings_received(self, values):
         self.resolution.setCurrentText(f"{values['width']}x{values['height']}")
