@@ -1,0 +1,292 @@
+{
+  "date": "2026-10-24",
+  "base_commit": "anonymized-revision",
+  "hardware": "Raspberry Pi Zero W Rev 1.1 / OV5647",
+  "role": "headless H.264 camera",
+  "memory": {
+    "unit": "MiB",
+    "before_available": 228.8125,
+    "after_available": 274.06640625,
+    "available_gain": 45.25390625,
+    "available_gain_percent": 19.77772466539197,
+    "before_swap_logical_used": 96.37109375,
+    "after_swap_logical_used": 17.75390625,
+    "before_samples_kib": [
+      {
+        "MemTotal": 437156,
+        "MemAvailable": 234304,
+        "MemFree": 98040,
+        "SwapTotal": 436220,
+        "SwapFree": 337536,
+        "Shmem": 4988
+      },
+      {
+        "MemTotal": 437156,
+        "MemAvailable": 234336,
+        "MemFree": 98040,
+        "SwapTotal": 436220,
+        "SwapFree": 337536,
+        "Shmem": 4988
+      },
+      {
+        "MemTotal": 437156,
+        "MemAvailable": 234240,
+        "MemFree": 97944,
+        "SwapTotal": 436220,
+        "SwapFree": 337536,
+        "Shmem": 4988
+      }
+    ],
+    "after_samples_kib": [
+      {
+        "MemTotal": 437156,
+        "MemAvailable": 280644,
+        "MemFree": 82980,
+        "SwapTotal": 436220,
+        "SwapFree": 418040,
+        "Shmem": 2748
+      },
+      {
+        "MemTotal": 437156,
+        "MemAvailable": 280644,
+        "MemFree": 82980,
+        "SwapTotal": 436220,
+        "SwapFree": 418040,
+        "Shmem": 2748
+      },
+      {
+        "MemTotal": 437156,
+        "MemAvailable": 280644,
+        "MemFree": 82980,
+        "SwapTotal": 436220,
+        "SwapFree": 418040,
+        "Shmem": 2748
+      }
+    ]
+  },
+  "before": {
+    "default_target": "graphical.target",
+    "system_units": {
+      "lightdm.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "bluetooth.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "camera.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "ssh.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "tailscaled.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "NetworkManager.service": {
+        "enabled": "enabled",
+        "active": "active"
+      }
+    },
+    "user_units": {
+      "rpi-connect.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "rpi-connect-wayvnc.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "pipewire.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "pipewire.socket": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "pipewire-pulse.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "pipewire-pulse.socket": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "wireplumber.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "filter-chain.service": {
+        "enabled": "enabled",
+        "active": "active"
+      }
+    }
+  },
+  "after": {
+    "default_target": "multi-user.target",
+    "system_units": {
+      "lightdm.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "bluetooth.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "camera.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "ssh.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "tailscaled.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "NetworkManager.service": {
+        "enabled": "enabled",
+        "active": "active"
+      }
+    },
+    "user_units": {
+      "rpi-connect.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "rpi-connect-wayvnc.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "pipewire.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "pipewire.socket": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "pipewire-pulse.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "pipewire-pulse.socket": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "wireplumber.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      },
+      "filter-chain.service": {
+        "enabled": "masked",
+        "active": "inactive"
+      }
+    },
+    "linger": "yes",
+    "tailscale": {
+      "backend_state": "Running",
+      "self_online": true
+    },
+    "camera_pid_unchanged": true,
+    "no_reboot": true,
+    "firmware_files_unchanged": {
+      "config.txt": true,
+      "cmdline.txt": true
+    },
+    "desktop_processes": "",
+    "user_failed_units": "",
+    "system_failed_units": ""
+  },
+  "connect": {
+    "daemon_active": true,
+    "signed_in": true,
+    "event_subscription": true,
+    "remote_shell_allowed": true,
+    "screen_sharing_allowed": false
+  },
+  "video_30s": {
+    "initial_settings": {
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "bitrate": 2000000
+    },
+    "profiles": [
+      {
+        "requested": "current",
+        "acknowledged": {
+          "width": 640,
+          "height": 480,
+          "fps": 30,
+          "bitrate": 2000000
+        },
+        "open_seconds": 6.413071899994975,
+        "opened": true,
+        "frames": 936,
+        "first_frame_seconds": 6.422963499993784,
+        "received_fps": 31.173015362960946,
+        "shapes": [
+          [
+            480,
+            640,
+            3
+          ]
+        ],
+        "image_saved": true,
+        "shape_matches_settings": true
+      }
+    ],
+    "restored": null
+  },
+  "load": {
+    "cpu_busy_percent": 50.2262443438914,
+    "memory_samples": [
+      {
+        "MemAvailable": 285792,
+        "SwapFree": 416804,
+        "Shmem": 2648
+      },
+      {
+        "MemAvailable": 285544,
+        "SwapFree": 416804,
+        "Shmem": 2648
+      },
+      {
+        "MemAvailable": 285544,
+        "SwapFree": 416804,
+        "Shmem": 2648
+      },
+      {
+        "MemAvailable": 285544,
+        "SwapFree": 416804,
+        "Shmem": 2648
+      },
+      {
+        "MemAvailable": 285544,
+        "SwapFree": 416804,
+        "Shmem": 2648
+      }
+    ],
+    "throttled": "throttled=0x0",
+    "temperature": "temp=37.9'C",
+    "camera": "active",
+    "boot_files_unchanged": {
+      "config.txt": true,
+      "cmdline.txt": true
+    }
+  },
+  "limits": [
+    "No reboot performed; next-boot configuration checked but cold-start not exercised",
+    "Camera trial lasted 30 seconds, not an endurance test",
+    "CPU load sample overlapped administrative queries; no CPU speedup claimed",
+    "Logical zram swap use is not physical compressed RAM consumption",
+    "Raspberry Pi Connect shell availability checked by daemon/status; interactive WebRTC shell not opened"
+  ]
+}

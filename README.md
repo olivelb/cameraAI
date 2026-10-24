@@ -252,6 +252,12 @@ The hardware report [audit/camera-2026-10-24.md](audit/camera-2026-10-24.md) rec
 native shutdown, Linux lock and live CUDA/MJPEG evidence, plus failed and
 unqualified cases. Captured room images remain in ignored local test output.
 
+For the dedicated Pi Zero headless setup, see
+[the applied profile and rollback guide](audit/headless-2026-10-24.md).
+It keeps the camera, SSH, Wi-Fi, Tailscale and Connect remote shell running while
+disabling the desktop, screen sharing, Bluetooth and desktop audio. GPU/encoder
+memory and the existing zram are preserved.
+
 ## License
 
 Private project.
