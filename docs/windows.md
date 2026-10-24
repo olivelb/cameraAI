@@ -56,10 +56,12 @@ celui du moteur commun. Les alertes sont désactivées à chaque démarrage.
 
 ## Réseau local et WireGuard
 
-Dans l’installation VPN gateway → router → Pi :
+Configurer l’adresse accessible depuis le réseau utilisé :
 
-- via WireGuard : adresse **192.0.2.10**, ports **8888** / **8889** ;
-- directement sur le LAN du C6 : adresse du Pi **camera.example.invalid** ;
+- directement sur le réseau de la caméra : son adresse ou son nom d’hôte ;
+- via un VPN : l’adresse accessible dans le tunnel, selon son routage et les
+  éventuelles redirections de ports de l’installation ;
+- les ports par défaut sont **8888** pour la vidéo et **8889** pour les commandes ;
 - le profil **VPN / réseau mobile** propose 12 s pour ouvrir et 10 s pour lire ;
 - le profil **Réseau local** propose 10 s pour ouvrir et 3 s pour lire.
 

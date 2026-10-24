@@ -136,6 +136,11 @@ sudo systemctl start camera
 
 All settings are in `config.yaml`. Key options:
 
+Published examples use fictional hostnames and documentation-only IP addresses.
+Keep installation addresses, account names and email credentials in the ignored
+local configuration files. Adapt the example service account and installation
+directory before enabling the systemd service.
+
 | Setting | Description | Default |
 |---|---|---|
 | `pi.host` | Raspberry Pi IP address | `camera.example.invalid` |
@@ -186,7 +191,7 @@ CAMERA__UI__AUTH_PASSWORD=s3cret python app.py
 Place photos in `faces/<person_name>/`:
 ```
 faces/
-  Example Person/
+  person-a/
     photo_001.jpg
     photo_002.jpg
   alice/

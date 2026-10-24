@@ -132,7 +132,7 @@ def test_connection_save_is_validated_atomic_and_preserves_other_settings(tmp_pa
 
     monkeypatch.setattr(backend.os, "replace", fail)
     with pytest.raises(OSError):
-        backend.save_connection("camera.example.invalid", 8888, 8889, "fixture", 7000, 3000, path=path)
+        backend.save_connection("198.51.100.30", 8888, 8889, "fixture", 7000, 3000, path=path)
     assert candidate.pi.host == "192.0.2.10"
     assert path.read_bytes() == previous
 

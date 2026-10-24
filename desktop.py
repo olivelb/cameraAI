@@ -230,7 +230,7 @@ class CameraWindow(QMainWindow):
 
     def _camera_page(self):
         layout = self.page("Caméra")
-        layout.addWidget(self.note("Connexion locale ou VPN. Avec WireGuard VPN gateway : 192.0.2.10. Le VPN doit être actif."))
+        layout.addWidget(self.note("Indique l’adresse de ta caméra ou du point d’accès configuré. Pour un accès distant, active ton VPN avant la connexion."))
         form = QFormLayout()
         self.host = QLineEdit(cfg.pi.host)
         self.video_port = self.number(1, 65535, cfg.pi.video_port)

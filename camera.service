@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Example deployment: set the account and installation paths before enabling.
 User=camera
 WorkingDirectory=/opt/smart-camera
 ExecStart=/usr/bin/python3 /opt/smart-camera/server.py
