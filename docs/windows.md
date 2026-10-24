@@ -115,6 +115,8 @@ configurés. Elle enregistre des compteurs et intervalles de la boucle Qt ; aucu
 image n’est sauvegardée. Ne pas la lancer en même temps qu’un autre lecteur.
 Les tests automatisés utilisent Qt hors écran et des images synthétiques ; ils
 ne remplacent pas la qualification de la caméra/GPU/réseau réel.
+Sur Linux, les tests Qt hors écran nécessitent aussi les bibliothèques système
+`libegl1` et `libopengl0` ; la CI les installe avant l’exécution des tests.
 
 En cas d’erreur au lancement, consulter `launcher.log`. Si l’image est figée,
 regarder l’état de connexion et le compteur Réception, vérifier le VPN, fermer

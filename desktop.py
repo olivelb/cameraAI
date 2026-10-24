@@ -109,7 +109,8 @@ class CameraWindow(QMainWindow):
         if geometry is not None:
             self.restoreGeometry(geometry)
         self.timer = QTimer(self)
-        self.timer.setInterval(33)
+        self.timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.timer.setInterval(16)
         self.timer.timeout.connect(self.refresh)
         self.timer.start()
         self.slow_timer = QTimer(self)
@@ -549,13 +550,17 @@ class CameraWindow(QMainWindow):
             times = tuple(state.frame_times)
         self.connection.setText("Connectée" if age < 3 else status if age == float("inf") else "Flux interrompu")
         waiting = "Flux interrompu — attente de données…" if status == "Connectée" else status
-        self.video.notice = "Affichage en pause" if self.pause.isChecked() else waiting if age > 3 else ""
+        notice = "Affichage en pause" if self.pause.isChecked() else waiting if age > 3 else ""
+        repaint = notice != self.video.notice
+        self.video.notice = notice
         if not self.pause.isChecked() and frame is not None and key != self._last_image_key:
             self.video.image = frame_image(frame)
             self._snapshot = frame
             self._last_image_key = key
             self._painted += 1
-        self.video.update()
+            repaint = True
+        if repaint:
+            self.video.update()
         self.snapshot_button.setEnabled(self._snapshot is not None)
         if now - self._metric_time >= 1:
             recent = [stamp for stamp in times if now - stamp <= 2]
