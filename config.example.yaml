@@ -58,6 +58,8 @@ email:
 
 stream:
   jpeg_quality: 80
+  capture_open_timeout_ms: 7000   # Raw H.264 probing took 6-7 s on the tested Pi Zero
+  capture_read_timeout_ms: 3000
 
 ui:
   server_host: "127.0.0.1"
@@ -73,4 +75,4 @@ camera:
     - [640, 480]
     - [1296, 972]
     - [1920, 1080]
-    - [2592, 1944]
+    - [2592, 1944]              # Sensor photo mode; excluded from H.264 streaming

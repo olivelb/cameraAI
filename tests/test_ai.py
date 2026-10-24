@@ -68,3 +68,12 @@ def test_cpu_vlm_fails_before_loading_or_releasing_models(monkeypatch):
     previous = processor.segment_model
     assert "CUDA" in processor.describe_scene(None)
     assert processor.segment_model is previous
+
+
+def test_tensorrt_segmentation_task_is_explicit(monkeypatch):
+    processor = module.AIProcessor(autoload=False)
+    processor.device = "cuda"
+    loaded = []
+    monkeypatch.setattr(module, "YOLO", lambda name, *, task: loaded.append((name, task)) or object())
+    processor.load_segmentation_model("yolo26n-seg.engine", "Segmentation")
+    assert loaded == [("yolo26n-seg.engine", "segment")]

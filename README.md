@@ -218,6 +218,40 @@ The Pi retains its PID file as an advisory-lock inode; a leftover file does not
 mean a process is running. See [AUDIT.md](AUDIT.md) for findings, evidence and
 prioritized improvements.
 
+### Pi Zero hardware qualification
+
+The OV5647 sensor's 2592×1944 still-photo mode is excluded from the H.264
+stream choices: it failed to start encoding on the tested Pi Zero W. Streaming
+was verified at 640×480, 1296×972 and 1920×1080, including requests for 30 fps.
+The server rejects unsupported dimensions even if they remain in an older
+`camera.valid_resolutions` configuration.
+
+Client connection/read timeouts are configured through
+`stream.capture_open_timeout_ms` (7000) and `stream.capture_read_timeout_ms`
+(3000). Raw H.264 probing took around 6–7 seconds in the default decoder;
+an opening timeout shorter than that can interrupt a healthy connection.
+
+Run a short read-only check using the client environment:
+
+```bash
+python -m tools.qualify_pi --output .audit-tmp/pi-check --seconds 5
+```
+
+To temporarily change profiles, restoring the initial settings afterwards:
+
+```bash
+python -m tools.qualify_pi --output .audit-tmp/pi-profiles --profiles 640x480@30 1296x972@30 1920x1080@30
+```
+
+Use the correct reachable `pi.host` and the same control token on client and
+server. On the Pi, a server-only config containing the `server` and `camera`
+sections avoids coupling its startup to unused client/UI settings.
+The control token does not encrypt or authenticate the TCP video feed.
+
+The hardware report [audit/camera-2026-10-24.md](audit/camera-2026-10-24.md) records
+native shutdown, Linux lock and live CUDA/MJPEG evidence, plus failed and
+unqualified cases. Captured room images remain in ignored local test output.
+
 ## License
 
 Private project.

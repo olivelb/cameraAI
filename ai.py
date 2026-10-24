@@ -220,7 +220,11 @@ class AIProcessor:
                     model = SAM(target_name)
                     model_type = "sam"
                 else:
-                    model = YOLO(target_name)
+                    if target_name.endswith(".engine"):
+                        task = "segment" if task_type == "Segmentation" else "detect"
+                        model = YOLO(target_name, task=task)
+                    else:
+                        model = YOLO(target_name)
                     model_type = "yolo"
 
                 self.segment_model = model

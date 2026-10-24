@@ -1,0 +1,263 @@
+{
+  "date": "2026-10-24",
+  "base_commit": "anonymized-revision",
+  "hardware": {
+    "pi": "Raspberry Pi Zero W Rev 1.1",
+    "sensor": "OV5647",
+    "python": "3.13.5",
+    "architecture": "armv6l"
+  },
+  "deployed_sha256": {
+    "server.py": "681d1c446dc08a48c242fcca36ae361928bbc1b6fc8763e487d4c241d8c387e9",
+    "config.py": "5b6e764ce274eb8b9681a831d8938754d514be45520eb49432eddae9ab160f71",
+    "camera.service": "98137e3b64a3f45f1fe707c4099f784932a83dcadb4f01f0d3e5da5e93ac93ee"
+  },
+  "profiles": {
+    "initial_settings": {
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "bitrate": 2000000
+    },
+    "profiles": [
+      {
+        "requested": "640x480@30",
+        "acknowledged": {
+          "width": 640,
+          "height": 480,
+          "fps": 30,
+          "bitrate": 2000000
+        },
+        "open_seconds": 6.172768500007805,
+        "opened": true,
+        "frames": 156,
+        "first_frame_seconds": 6.187604699996882,
+        "received_fps": 38.62815232197951,
+        "shapes": [
+          [
+            480,
+            640,
+            3
+          ]
+        ],
+        "image_saved": true
+      },
+      {
+        "requested": "1296x972@30",
+        "acknowledged": {
+          "width": 1296,
+          "height": 972,
+          "fps": 30,
+          "bitrate": 2000000
+        },
+        "open_seconds": 6.877053100004559,
+        "opened": true,
+        "frames": 148,
+        "first_frame_seconds": 6.899132800012012,
+        "received_fps": 36.93759125103423,
+        "shapes": [
+          [
+            972,
+            1296,
+            3
+          ]
+        ],
+        "image_saved": true
+      },
+      {
+        "requested": "1920x1080@30",
+        "acknowledged": {
+          "width": 1920,
+          "height": 1080,
+          "fps": 30,
+          "bitrate": 2000000
+        },
+        "open_seconds": 6.38262499999837,
+        "opened": true,
+        "frames": 155,
+        "first_frame_seconds": 6.416418500011787,
+        "received_fps": 38.77556631724851,
+        "shapes": [
+          [
+            1080,
+            1920,
+            3
+          ]
+        ],
+        "image_saved": true
+      },
+      {
+        "requested": "640x480@15",
+        "acknowledged": {
+          "width": 640,
+          "height": 480,
+          "fps": 15,
+          "bitrate": 2000000
+        },
+        "open_seconds": 7.033440800005337,
+        "opened": true,
+        "frames": 81,
+        "first_frame_seconds": 7.041322699995362,
+        "received_fps": 19.742929291948503,
+        "shapes": [
+          [
+            480,
+            640,
+            3
+          ]
+        ],
+        "image_saved": true
+      }
+    ],
+    "restored": {
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "bitrate": 2000000
+    }
+  },
+  "control": {
+    "no_token": {
+      "seconds": 0.06216060000588186,
+      "response": {
+        "type": "error",
+        "code": "unauthorized",
+        "message": "Missing or invalid camera control token"
+      }
+    },
+    "bad_token": {
+      "seconds": 0.0520472000062,
+      "response": {
+        "type": "error",
+        "code": "unauthorized",
+        "message": "Missing or invalid camera control token"
+      }
+    },
+    "unicode_token": {
+      "seconds": 0.0413708999985829,
+      "response": {
+        "type": "error",
+        "code": "unauthorized",
+        "message": "Missing or invalid camera control token"
+      }
+    },
+    "full_sensor": {
+      "seconds": 0.051739100003032945,
+      "response": {
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "bitrate": 2000000
+      }
+    },
+    "fps_zero": {
+      "seconds": 0.04333139999653213,
+      "response": {
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "bitrate": 2000000
+      }
+    }
+  },
+  "lifecycle": [
+    {
+      "cycle": 0,
+      "stop_seconds": 0.9277312170002006,
+      "video_children_after_stop": [],
+      "service_after_start": "active"
+    },
+    {
+      "cycle": 1,
+      "stop_seconds": 1.0233278220000557,
+      "video_children_after_stop": [],
+      "service_after_start": "active"
+    }
+  ],
+  "fault_recovery": {
+    "old_child": 2791,
+    "replacement_child": 2811,
+    "spawn_seconds": 0.22891302600010022,
+    "listen_seconds": 1.2613236309998683,
+    "main_process_unchanged": true,
+    "service": "active"
+  },
+  "after_fault": {
+    "initial_settings": {
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "bitrate": 2000000
+    },
+    "profiles": [
+      {
+        "requested": "current",
+        "acknowledged": {
+          "width": 640,
+          "height": 480,
+          "fps": 30,
+          "bitrate": 2000000
+        },
+        "open_seconds": 6.027844700001879,
+        "opened": true,
+        "frames": 126,
+        "first_frame_seconds": 6.037050400002045,
+        "received_fps": 41.42429999134846,
+        "shapes": [
+          [
+            480,
+            640,
+            3
+          ]
+        ],
+        "image_saved": true,
+        "shape_matches_settings": true
+      }
+    ],
+    "restored": null
+  },
+  "live_client": {
+    "anonymous_stream_status": 401,
+    "login_status": 200,
+    "authenticated_stream_status": 200,
+    "mjpeg_boundary": true,
+    "frame_id": 84,
+    "processed_id": 84,
+    "image_shape": [
+      480,
+      640,
+      3
+    ],
+    "ai_status": "Res: 640x480 | Obj: 0 | FPS: 221.5 (cuda)",
+    "device": "cuda",
+    "model": "yolo26n.engine"
+  },
+  "ai_runtime": {
+    "gpu": "GPU NVIDIA compatible CUDA",
+    "torch": "2.6.0+cu124",
+    "cuda": "12.4",
+    "packages": {
+      "opencv-python": "4.13.0.92",
+      "gradio": "6.30.0",
+      "ultralytics": "8.4.14",
+      "websockets": "15.0.1"
+    }
+  },
+  "segmentation": {
+    "loaded": "Loaded yolo26n-seg.engine",
+    "task": "segment",
+    "status": "Res: 640x480 | Obj: 0 | FPS: 2.3 (cuda)",
+    "shape": [
+      480,
+      640,
+      3
+    ],
+    "classes": []
+  },
+  "limits": [
+    "Short functional trials, not sustained throughput or recognition accuracy benchmarks",
+    "received_fps includes decoder startup backlog; AI status FPS is inference-only",
+    "No reboot or hardware/network power outage test",
+    "Pillow security finding from prior audit remains open"
+  ]
+}

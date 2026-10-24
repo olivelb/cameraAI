@@ -112,6 +112,8 @@ class EmailSettings:
 @dataclass
 class StreamSettings:
     jpeg_quality: int = 80
+    capture_open_timeout_ms: int = 7000
+    capture_read_timeout_ms: int = 3000
 
 
 @dataclass
@@ -136,6 +138,13 @@ class CameraSettings:
 
     def valid_resolution_set(self) -> set[tuple[int, int]]:
         return {tuple(r) for r in self.valid_resolutions}
+
+    def stream_resolution_set(self) -> set[tuple[int, int]]:
+        """Restrict output to the Pi Zero's H.264 encoder envelope.
+
+        Sensor still-photo modes such as 2592x1944 exceed this envelope.
+        """
+        return {(w, h) for w, h in self.valid_resolution_set() if w <= 1920 and h <= 1080}
 
 
 @dataclass
@@ -239,8 +248,10 @@ def validate_settings(settings: Settings) -> None:
     valid = settings.camera.valid_resolution_set()
     if tuple(settings.pi.default_resolution) not in valid:
         raise ValueError("pi.default_resolution is not in camera.valid_resolutions")
-    if (settings.server.default_width, settings.server.default_height) not in valid:
-        raise ValueError("Server default resolution is not in camera.valid_resolutions")
+    if (settings.server.default_width, settings.server.default_height) not in settings.camera.stream_resolution_set():
+        raise ValueError("Server default resolution is outside supported H.264 video modes")
+    if tuple(settings.pi.default_resolution) not in settings.camera.stream_resolution_set():
+        raise ValueError("Pi default resolution is outside supported H.264 video modes")
     if settings.server.video_port == settings.server.ws_port:
         raise ValueError("Server video and WebSocket ports must differ")
     ids = settings.ai.detection_classes + settings.ai.animal_classes + [settings.ai.person_class]

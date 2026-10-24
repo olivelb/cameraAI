@@ -18,6 +18,8 @@ import time
 import tempfile
 from pathlib import Path
 
+from capture import open_pi_capture
+
 import cv2
 import gradio as gr
 import numpy as np
@@ -275,6 +277,8 @@ def _send_ws(data: dict, label: str = "") -> str:
                 raise ValueError("Invalid initial settings from camera server")
             conn.send(json.dumps(payload))
             reply = json.loads(conn.recv())
+            if reply.get("type") == "error":
+                raise ValueError(reply.get("message", "Camera server rejected the command"))
             if reply.get("type") != "current_settings":
                 raise ValueError("Camera server did not acknowledge settings")
             if any(reply.get("data", {}).get(k) != v for k, v in data.get("data", {}).items()):
@@ -364,10 +368,7 @@ def read_stream() -> None:
             except Exception as e:
                 log.debug("Error releasing previous capture: %s", e)
         ui_log("🖥️ Connecting to Pi camera server...")
-        cap = cv2.VideoCapture(cfg.pi.video_url, cv2.CAP_FFMPEG, [
-            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000,
-            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
-        ])
+        cap = open_pi_capture()
         fail_count = 0
         return cap
 
@@ -666,7 +667,7 @@ with gr.Blocks(title="AI Vision") as demo:
             with gr.Group(visible=True) as pi_group:
                 with gr.Row():
                     res_dropdown = gr.Dropdown(
-                        [f"{w}x{h}" for w, h in cfg.camera.valid_resolutions],
+                        [f"{w}x{h}" for w, h in sorted(cfg.camera.stream_resolution_set())],
                         value="x".join(map(str, cfg.pi.default_resolution)),
                         label="Pi Resolution",
                     )

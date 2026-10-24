@@ -49,6 +49,8 @@ def test_valid_resolution_set():
     camera = config.CameraSettings()
     assert (640, 480) in camera.valid_resolution_set()
     assert (800, 600) not in camera.valid_resolution_set()
+    assert (2592, 1944) not in camera.stream_resolution_set()
+    assert (1296, 972) in camera.stream_resolution_set()
 
 
 def test_urls_built_from_host():

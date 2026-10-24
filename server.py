@@ -15,6 +15,7 @@ Camera: OV5647 (Pi Camera v1) — 640x480 @ 30fps native
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -45,7 +46,7 @@ _DEFAULT_SETTINGS = {
     "fps": cfg.server.default_fps,
     "bitrate": cfg.server.default_bitrate,
 }
-_VALID_RESOLUTIONS = cfg.camera.valid_resolution_set()
+_VALID_RESOLUTIONS = cfg.camera.stream_resolution_set()
 
 
 # ── PID file — prevents duplicate instances ──────────────────────────────────
@@ -86,31 +87,18 @@ settings: dict[str, int] = dict(_DEFAULT_SETTINGS)
 _watchdog_stop = _threading.Event()
 _watchdog_restart = _threading.Event()
 _stream_lock = _threading.Lock()
+_settings_lock = _threading.Lock()
 _stream_process: subprocess.Popen | None = None
 
 
 def build_rpicam_cmd() -> list[str]:
-    """Build the rpicam-vid command optimized for the Pi.
-
-    Key optimizations:
-      --nopreview     Saves ~5% ARM CPU
-      --denoise off   Saves ~8% ARM CPU
-      --profile baseline  Simplest H.264 profile — fastest VPU path
-      --inline        SPS/PPS in every keyframe — allows mid-stream joins
-      --flush         No OS buffering latency
-      --intra 2*fps   Keyframe every 2s — fewer expensive I-frames
-      nice -n -10     Raises scheduling priority
-
-    Returns an argument list (executed without a shell).
-    """
-    w = settings["width"]
-    h = settings["height"]
-    fps = settings["fps"]
-    br = settings["bitrate"]
+    """Build native H.264 output arguments without requiring elevated niceness."""
+    with _settings_lock:
+        w, h, fps, br = (settings[key] for key in ("width", "height", "fps", "bitrate"))
     intra = fps * 2
 
     return [
-        "nice", "-n", "-10", "rpicam-vid",
+        "rpicam-vid",
         "--nopreview",
         "--width", str(w),
         "--height", str(h),
@@ -229,7 +217,7 @@ async def handle_client(websocket) -> None:
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 log.warning("Malformed JSON from %s: %s", client, e)
                 continue
 
@@ -239,11 +227,16 @@ async def handle_client(websocket) -> None:
             if msg.get("type") != "update_settings":
                 continue
 
-            if _AUTH_TOKEN and msg.get("token") != _AUTH_TOKEN:
+            token = msg.get("token")
+            if _AUTH_TOKEN and (not isinstance(token, str) or not hmac.compare_digest(token.encode(), _AUTH_TOKEN.encode())):
                 log.warning(
                     "update_settings from %s rejected: missing or invalid token",
                     client,
                 )
+                await websocket.send(json.dumps({
+                    "type": "error", "code": "unauthorized",
+                    "message": "Missing or invalid camera control token",
+                }))
                 continue
 
             updates = msg.get("data", {})
@@ -280,14 +273,16 @@ async def handle_client(websocket) -> None:
                 )
                 if pair not in _VALID_RESOLUTIONS:
                     log.warning(
-                        "Invalid resolution %dx%d — not a native mode. Ignored.",
+                        "Invalid resolution %dx%d — unsupported H.264 video mode. Ignored.",
                         pair[0],
                         pair[1],
                     )
                     pending.pop("width", None)
                     pending.pop("height", None)
 
-            with _stream_lock:
+            # Never hold the process-management lock on the asyncio thread:
+            # terminating a child can take several seconds.
+            with _settings_lock:
                 for key, value in pending.items():
                     if settings[key] != value:
                         log.info("  %s: %s → %s", key, settings[key], value)
@@ -316,10 +311,14 @@ async def main() -> None:
     acquire_pid_lock()
     watchdog = None
     shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     def _shutdown(signum, frame):
         log.info("Received signal %s. Shutting down...", signum)
-        shutdown.set()
+        # signal.signal callbacks don't wake an idle selector by themselves.
+        # Schedule through the loop's wakeup pipe so SIGTERM is handled promptly.
+        stop_stream()
+        loop.call_soon_threadsafe(shutdown.set)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
@@ -330,7 +329,7 @@ async def main() -> None:
     # Bind all interfaces: the Pi must be reachable from LAN/Tailscale clients
     try:
         async with websockets.serve(
-            handle_client, "0.0.0.0", _WS_PORT, max_size=4096  # noqa: S104
+            handle_client, "0.0.0.0", _WS_PORT, max_size=4096, close_timeout=3  # noqa: S104
         ):
             watchdog = start_watchdog()
             await shutdown.wait()

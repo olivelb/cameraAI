@@ -5,8 +5,14 @@
 Audit de l'ensemble des 16 fichiers suivis au départ, sur la branche `main`,
 base `anonymized-revision`. Le dépôt était propre. Revue du client Gradio, moteur IA,
 reconnaisseurs, serveur Pi, configuration, notifications, dépendances,
-service systemd, documentation et tests. L'audit et ses corrections sont regroupés
-dans un commit local ; aucune publication ni aucun déploiement n'a été effectué.
+service systemd, documentation et tests. L'audit et ses corrections ont été livrés
+dans le commit `anonymized-revision`, publié sur `main` après validation CI Ubuntu et Windows.
+
+**Complément du 24 octobre :** le serveur a depuis été déployé et testé sur le
+vrai Pi Zero W, avec corrections supplémentaires. Voir la
+[qualification matérielle](audit/camera-2026-10-24.md). Les tableaux ci-dessous
+décrivent les preuves de l'audit initial du 23 ; leurs limites matérielles sont
+complétées par ce second rapport. Le blocage sécurité Pillow reste ouvert.
 
 Les défauts applicatifs décrits comme corrigés ci-dessous ont été traités.
 La qualification de sécurité des dépendances reste **en échec** à cause de
