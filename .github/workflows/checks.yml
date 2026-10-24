@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 10
     env:
       GRADIO_ANALYTICS_ENABLED: 'False'
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,3 +37,7 @@ jobs:
       - run: python -m pip check
       - run: python -m ruff check .
       - run: python -m pytest -q
+      - name: Build Windows launcher
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tools/build_windows_launcher.ps1

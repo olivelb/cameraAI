@@ -38,6 +38,16 @@ def test_cpu_does_not_auto_select_tensorrt(monkeypatch):
     assert loaded == ["yolo26n.pt"]
 
 
+def test_model_file_picker_does_not_treat_parent_directory_as_sam(tmp_path, monkeypatch):
+    processor = module.AIProcessor(autoload=False)
+    loaded = []
+    monkeypatch.setattr(module, "YOLO", lambda name: loaded.append(name) or object())
+    model_path = str(tmp_path / "sam-gallery" / "yolo26n.pt")
+    assert processor.load_segmentation_model(model_path).startswith("Loaded")
+    assert loaded == [model_path]
+    assert processor.model_type == "yolo"
+
+
 def test_crop_clamps_negative_boxes_and_masks():
     frame = np.full((10, 20, 3), 255, np.uint8)
     crop = module.AIProcessor._extract_animal_crop(frame, [-10, -10, 30, 30], None, 0)

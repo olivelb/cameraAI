@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture
 def application(tmp_path, monkeypatch):
     monkeypatch.setenv("GRADIO_ANALYTICS_ENABLED", "False")
-    import app
+    import camera_core as app
     monkeypatch.setattr(app, "_ROOT", tmp_path)
     monkeypatch.setattr(app, "_KEY_FILE", tmp_path / ".secret.key")
     monkeypatch.setattr(app, "_CONFIG_FILE", tmp_path / "email_config.json")
@@ -20,6 +20,8 @@ def application(tmp_path, monkeypatch):
 
 
 def test_ui_constructs_without_starting_ai_loader(application):
+    import app
+    assert app.demo is not None
     assert not application.ai._loader_started
     assert not application._threads_started
 

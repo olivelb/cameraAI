@@ -150,7 +150,7 @@ class AIProcessor:
             # SAM models use their own checkpoint names (for example
             # ``sam3.pt``).  Unlike YOLO, they must not be rewritten to a
             # ``-seg`` variant when the UI task toggle changes.
-            is_sam_model = "sam" in model_name.lower()
+            is_sam_model = os.path.basename(model_name).lower().startswith("sam")
             if is_sam_model:
                 target_name = model_name
             else:
@@ -194,13 +194,13 @@ class AIProcessor:
                     self.segment_model_name = target_name
                     self.model_type = (
                         "sam3"
-                        if target_name.lower() == "sam3.pt"
-                        else "sam" if "sam" in target_name.lower() else "yolo"
+                        if os.path.basename(target_name).lower() == "sam3.pt"
+                        else "sam" if is_sam_model else "yolo"
                     )
                     self._clear_track_history()
                     return f"Loaded Cached {target_name}"
 
-                if target_name.lower() == "sam3.pt":
+                if os.path.basename(target_name).lower() == "sam3.pt":
                     from ultralytics.models.sam import SAM3SemanticPredictor
 
                     model = SAM3SemanticPredictor(
@@ -216,7 +216,7 @@ class AIProcessor:
                         }
                     )
                     model_type = "sam3"
-                elif "sam" in target_name.lower():
+                elif is_sam_model:
                     model = SAM(target_name)
                     model_type = "sam"
                 else:

@@ -1,6 +1,21 @@
 # AI Smart Camera
 
-AI-powered smart camera application that connects to a Raspberry Pi camera stream and performs real-time object detection, segmentation, tracking, face recognition, and animal recognition with a modern Gradio web UI.
+AI-powered smart camera application that connects to a Raspberry Pi camera stream and performs real-time object detection, segmentation, tracking, face recognition, and animal recognition. Use the native Windows application or the optional Gradio web UI.
+
+### Native Windows application
+
+Install `requirements-desktop.txt` in the application's dedicated ML environment,
+then run `python desktop.py`. To build the double-click Windows launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build_windows_launcher.ps1 -Shortcut
+```
+
+`SmartCamera.exe` stays beside `desktop.py` and uses the project's `.venv` (or the
+locally qualified `.venv-audit`). It is a launcher for the installed environment,
+not a standalone redistribution of Python, CUDA and model weights. The native
+application does not start a web server. See the [Windows guide](docs/windows.md)
+for controls, VPN profiles, troubleshooting and qualification limits.
 
 ## Features
 
@@ -17,7 +32,10 @@ AI-powered smart camera application that connects to a Raspberry Pi camera strea
 
 | Component | File | Description |
 |---|---|---|
-| AI Frontend | `app.py` | Gradio UI + video capture + AI processing loop |
+| Web Frontend | `app.py` | Optional Gradio UI using the shared runtime |
+| Windows Frontend | `desktop.py` | Native Qt Widgets, direct video, background commands |
+| Shared Runtime | `camera_core.py` | Capture, AI loop, galleries, alerts and VLM callbacks |
+| Desktop Boundaries | `desktop_backend.py` | Serialized commands and atomic connection settings |
 | AI Engine | `ai.py` | Model loading, inference, VLM (Gemma4-E2B) |
 | Face Recognizer | `face_recognizer.py` | RetinaFace + ArcFace ONNX pipeline |
 | Animal Recognizer | `animal_recognizer.py` | DINOv3-based pet re-identification |

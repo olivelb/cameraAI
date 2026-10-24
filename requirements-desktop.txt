@@ -1,0 +1,3 @@
+# Native Qt Widgets only: no embedded browser or Qt WebEngine needed.
+-r requirements.txt
+PySide6-Essentials==6.12.0
