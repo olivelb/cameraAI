@@ -167,6 +167,8 @@ def test_every_function_via_cli(controlled_app):
         ])
     seen = set()
     for name, params in cases:
+        if name == "network.get":
+            app.window.host.setText("unsaved.example.invalid")
         result = app.call(name, params, stdin="password" in params)
         seen.add(name)
         if name == "tracking.set":
@@ -176,6 +178,11 @@ def test_every_function_via_cli(controlled_app):
             assert result["result"][1]["content"] == "A test scene."
         if name == "network.get" and not params:
             assert "host" not in result["result"]
+        if name == "network.get":
+            assert app.window.host.text() == "unsaved.example.invalid"
+        if name == "recognition.set" and "threshold" in params:
+            widget = app.window.animal_threshold if params["kind"] == "animals" else app.window.face_threshold
+            assert widget.value() == params["threshold"]
     jobs = app.call("jobs.list")["result"]
     assert jobs and all("params" not in job for job in jobs)
     app.call("job.get", {"id": jobs[-1]["id"]})

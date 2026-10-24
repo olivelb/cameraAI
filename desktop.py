@@ -475,7 +475,7 @@ class CameraWindow(QMainWindow):
     def sync_control_result(self, name, params, value):
         if name in ("camera.get", "camera.set", "camera.restart"):
             self.settings_received(value)
-        elif name.startswith("network.") and name != "network.tailscale":
+        elif name in ("network.use", "network.configure"):
             active = next(label for label, values in NETWORK_PRESETS.items() if values[0] == cfg.desktop.active_profile)
             self.network_profile.setCurrentText(active)
             self.select_network_profile(active)
@@ -492,6 +492,10 @@ class CameraWindow(QMainWindow):
         elif name == "recognition.set":
             animal = params["kind"] == "animals"
             (self.animal_enabled if animal else self.face_enabled).setChecked(value["enabled"])
+            threshold = self.animal_threshold if animal else self.face_threshold
+            configured = cfg.ai.animal_threshold if animal else cfg.ai.face_threshold
+            threshold.setRange(min(threshold.minimum(), configured), max(threshold.maximum(), configured))
+            threshold.setValue(configured)
             (self.animal_status if animal else self.face_status).setText(value["message"])
         elif name.startswith("gallery."):
             target = self.animal_status if params["kind"] == "animals" else self.face_status
