@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -25,6 +25,8 @@ import camera_core as core
 from config import cfg
 from desktop_backend import CommandWorker, camera_settings, restart_camera, save_connection, tailscale_devices
 from platform_utils import apply_windows_boost
+from application_commands import ApplicationCommands
+from control_api import CommandBus, ControlServer
 
 ROOT = Path(__file__).resolve().parent
 log = logging.getLogger(__name__)
@@ -90,22 +92,28 @@ class VideoView(QWidget):
 
 
 class CameraWindow(QMainWindow):
-    def __init__(self, *, start_camera=True):
+    def __init__(self, *, start_camera=True, enable_control=False, control_path=None):
         super().__init__()
         self.setWindowTitle("Smart Camera — Vision IA")
         self.setWindowIcon(QIcon(str(ROOT / "assets" / "smart-camera.ico")))
         self.resize(1380, 880)
         self.setMinimumSize(980, 650)
-        self.preferences = QSettings("CameraAI", "SmartCamera")
+        self.preferences = (QSettings(str(core.ai.gallery_root / "window.ini"), QSettings.Format.IniFormat)
+                            if core.ai.gallery_root != ROOT else QSettings("CameraAI", "SmartCamera"))
         self.worker = CommandWorker()
         self._completion = None
+        self._error_completion = None
+        self._quiet_completion = False
         self._closing = False
         self._last_image_key = None
         self._painted = 0
         self._metric_time = time.monotonic()
         self._last_log = ""
         self._snapshot = None
-        self._history = []
+        self.commands = ApplicationCommands(core)
+        self._history = self.commands.history
+        self.control = None
+        self.control_bus = None
         self._face_files = []
         self._animal_files = []
         self._actions = []
@@ -123,6 +131,13 @@ class CameraWindow(QMainWindow):
         self.slow_timer.setInterval(250)
         self.slow_timer.timeout.connect(self.poll_commands)
         self.slow_timer.start()
+        self.control_timer = QTimer(self)
+        self.control_timer.setInterval(30)
+        self.control_timer.timeout.connect(self.poll_control)
+        if enable_control:
+            self.control_bus = CommandBus(self.commands.status)
+            self.control = ControlServer(self.control_bus, control_path) if control_path else ControlServer(self.control_bus)
+            self.control_timer.start()
         if start_camera:
             core.start_background_threads()
             QTimer.singleShot(300, self.read_settings)
@@ -303,9 +318,13 @@ class CameraWindow(QMainWindow):
         layout.addWidget(self.note("Les modèles absents peuvent nécessiter un téléchargement. SAM3 et l’assistant visuel peuvent demander des droits d’accès Hugging Face. TensorRT nécessite le runtime NVIDIA compatible."))
         self.tracking = QCheckBox("Activer le suivi des objets")
         self.tracker = self.combo(["BoT-SORT", "ByteTrack"])
+        self.tracking.toggled.connect(self.apply_tracking)
+        self.tracker.currentTextChanged.connect(self.apply_tracking)
         layout.addWidget(self.tracking)
         layout.addWidget(self.tracker)
         layout.addWidget(self.button("Appliquer le suivi", self.apply_tracking))
+        self.tracking_status = self.note("Suivi désactivé")
+        layout.addWidget(self.tracking_status)
         layout.addStretch()
 
     def _gallery_page(self, *, animal):
@@ -377,11 +396,13 @@ class CameraWindow(QMainWindow):
         self.logs.setMaximumBlockCount(200)
         layout.addWidget(self.logs, 1)
         layout.addWidget(self.button("Ouvrir le dossier de l’application", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(ROOT))), background=False))
-        layout.addWidget(self.note("Le flux est reçu directement par cette application. Aucun serveur web ni partage public n’est démarré."))
+        layout.addWidget(self.note("Le flux est reçu directement par cette application. Le canal de contrôle CLI est authentifié et limité à cette machine."))
 
-    def run(self, label, action, done=None):
+    def run(self, label, action, done=None, failed=None, *, quiet=False):
         if self.worker.submit(label, action):
             self._completion = done
+            self._error_completion = failed
+            self._quiet_completion = quiet
             self.statusBar().showMessage(label + "…")
             for button in self._actions:
                 button.setEnabled(False)
@@ -396,6 +417,8 @@ class CameraWindow(QMainWindow):
                 self.close()
             return
         done, self._completion = self._completion, None
+        failed, self._error_completion = self._error_completion, None
+        quiet, self._quiet_completion = self._quiet_completion, False
         self.worker.acknowledge()
         for button in self._actions:
             button.setEnabled(True)
@@ -403,18 +426,86 @@ class CameraWindow(QMainWindow):
             message = f"{result.label} : {result.error}"
             core.ui_log(message)
             self.statusBar().showMessage(message)
+            if failed:
+                failed(result.error)
         else:
-            if result.label == "Appareils Tailscale":
+            if quiet:
+                message = "Terminé"
+            elif result.label == "Appareils Tailscale":
                 message = f"{len(result.value)} appareil(s) détecté(s)"
             else:
                 message = str(result.value) if result.value is not None else "Terminé"
             self.statusBar().showMessage(f"{result.label} : {message[:240]}")
-            if result.label != "Analyse de l’image":
+            if not quiet and result.label != "Analyse de l’image":
                 core.ui_log(f"{result.label} : {message[:500]}")
             if done:
                 done(result.value)
         if self._closing:
             self.close()
+
+    def poll_control(self):
+        if self.control_bus is None or self._closing:
+            return
+        pending = self.control_bus.take(ui_only=self.worker.busy)
+        if pending is None:
+            return
+        job_id, name, params = pending
+        if name in ("view.get", "view.set", "app.quit"):
+            if name == "app.quit":
+                self.control_bus.finish(job_id, result={"closing_requested": True})
+                QTimer.singleShot(300, self.close)
+                return
+            if "paused" in params:
+                self.pause.setChecked(params["paused"])
+            if "overlay" in params:
+                self.overlay.setChecked(params["overlay"])
+            if "fullscreen" in params:
+                self.showFullScreen() if params["fullscreen"] else self.showNormal()
+            self.commands.publish_view(paused=self.pause.isChecked(), overlay=self.overlay.isChecked(), fullscreen=self.isFullScreen())
+            self.control_bus.finish(job_id, result=self.commands.view())
+            return
+
+        def completed(value):
+            self.control_bus.finish(job_id, result=value)
+            self.sync_control_result(name, params, value)
+
+        self.run("CLI " + name, lambda: self.commands.execute(name, params), completed,
+                 lambda message: self.control_bus.finish(job_id, error_message=message), quiet=True)
+
+    def sync_control_result(self, name, params, value):
+        if name in ("camera.get", "camera.set", "camera.restart"):
+            self.settings_received(value)
+        elif name.startswith("network.") and name != "network.tailscale":
+            active = next(label for label, values in NETWORK_PRESETS.items() if values[0] == cfg.desktop.active_profile)
+            self.network_profile.setCurrentText(active)
+            self.select_network_profile(active)
+        elif name in ("model.load", "model.export"):
+            self.model.setCurrentText(core.ai.segment_model_name)
+            if "task" in params:
+                self.task.setCurrentText(params["task"])
+        elif name == "ai.set":
+            self.ai_enable.setChecked(core.state.ai_enabled)
+        elif name == "detection.set":
+            self.confidence.setValue(core.state.conf)
+        elif name == "sam.concepts":
+            self.concepts.setText(", ".join(core.ai.sam3_prompts))
+        elif name == "recognition.set":
+            animal = params["kind"] == "animals"
+            (self.animal_enabled if animal else self.face_enabled).setChecked(value["enabled"])
+            (self.animal_status if animal else self.face_status).setText(value["message"])
+        elif name.startswith("gallery."):
+            target = self.animal_status if params["kind"] == "animals" else self.face_status
+            target.setText(str(value.get("message", value.get("status", "Terminé"))))
+        elif name.startswith("alerts."):
+            self.email_enabled.setChecked(core.email_config["enabled"])
+            self.email_sender.setText(core.email_config["sender"])
+            self.email_receiver.setText(core.email_config["receiver"])
+            self.email_password.clear()
+        elif name == "assistant.ask":
+            self.chat.append("Vous : " + html.escape(params["message"]))
+            self.chat.append("Assistant : " + html.escape(value["answer"]))
+        elif name == "assistant.clear":
+            self.chat.clear()
 
     def connect_camera(self):
         values = (self.host.text(), self.video_port.value(), self.ws_port.value(),
@@ -502,14 +593,13 @@ class CameraWindow(QMainWindow):
         self.run("Concepts SAM3", lambda: core.update_sam3_prompt_logic(concepts))
 
     def apply_tracking(self):
+        if self.worker.busy:
+            with QSignalBlocker(self.tracking):
+                self.tracking.setChecked(core.ai.tracking_enabled)
+            self.statusBar().showMessage("Une opération est en cours ; le suivi n’a pas été modifié")
+            return
         enabled, tracker = self.tracking.isChecked(), self.tracker.currentText()
-
-        def apply():
-            core.change_tracker(tracker)
-            core.toggle_tracking(enabled)
-            return f"{tracker} — {'actif' if enabled else 'désactivé'}"
-
-        self.run("Suivi des objets", apply)
+        self.run("Suivi des objets", lambda: core.configure_tracking(enabled, tracker))
 
     def toggle_recognition(self, animal):
         enabled = (self.animal_enabled if animal else self.face_enabled).isChecked()
@@ -569,23 +659,22 @@ class CameraWindow(QMainWindow):
         question = self.question.text().strip()
         if not question or self.worker.busy:
             return
-        history = list(self._history)
         self.chat.append("Vous : " + html.escape(question))
         self.question.clear()
 
-        def answered(answer):
-            self.chat.append("Assistant : " + html.escape(str(answer)))
-            self._history.extend([{"role": "user", "content": question}, {"role": "assistant", "content": str(answer)}])
-            self._history = self._history[-20:]
+        def answered(value):
+            self.chat.append("Assistant : " + html.escape(value["answer"]))
 
-        self.run("Analyse de l’image", lambda: core.ask_vlm(question, history), answered)
+        self.run("Analyse de l’image", lambda: self.commands.execute("assistant.ask", {"message": question}),
+                 answered, lambda message: self.chat.append("Erreur : " + html.escape(message)), quiet=True)
 
     def clear_chat(self):
         if not self.worker.busy:
-            self._history.clear()
+            self.commands.execute("assistant.clear", {})
             self.chat.clear()
 
     def refresh(self):
+        self.commands.publish_view(paused=self.pause.isChecked(), overlay=self.overlay.isChecked(), fullscreen=self.isFullScreen())
         now = time.monotonic()
         with core.state.lock:
             state = core.state
@@ -620,6 +709,20 @@ class CameraWindow(QMainWindow):
                 info = "IA indisponible : " + core.ai._loader_error
             self.ai_status.setText(f"{core.ai.segment_model_name} · {core.ai.device} · {info}"
                                    if core.state.ai_enabled else "Traitement IA désactivé — aperçu direct")
+            with QSignalBlocker(self.tracking), QSignalBlocker(self.tracker):
+                self.tracking.setChecked(core.ai.tracking_enabled)
+                self.tracker.setCurrentText("BoT-SORT" if core.ai.tracker == "botsort.yaml" else "ByteTrack")
+            if not core.ai.tracking_enabled:
+                tracking_text = "Suivi désactivé"
+            elif not core.state.ai_enabled:
+                tracking_text = "Suivi suspendu — traitement IA désactivé"
+            elif core.ai.segment_model is None:
+                tracking_text = "Suivi demandé — modèle en cours de chargement"
+            elif core.ai.model_type != "yolo":
+                tracking_text = "Suivi demandé — indisponible pour ce modèle SAM"
+            else:
+                tracking_text = f"Suivi actif — {core.ai.tracker} — {len(core.state.track_ids)} identifiant(s)"
+            self.tracking_status.setText(tracking_text)
             self._painted = 0
             self._metric_time = now
             logs = core.get_logs()
@@ -661,6 +764,10 @@ class CameraWindow(QMainWindow):
         self.preferences.setValue("geometry", self.saveGeometry())
         self.timer.stop()
         self.slow_timer.stop()
+        self.control_timer.stop()
+        if self.control is not None:
+            self.control.close()
+            self.control = None
         self.worker.close()
         event.accept()
 
@@ -668,7 +775,12 @@ class CameraWindow(QMainWindow):
 def main():
     parser = argparse.ArgumentParser(description="Smart Camera — application Windows native")
     parser.add_argument("--no-camera", action="store_true", help="Ouvrir l’interface sans connexion ni chargement IA")
+    parser.add_argument("--control-file", type=Path, help="Fichier local privé du canal CLI")
+    parser.add_argument("--no-control", action="store_true", help="Désactiver le canal CLI local")
+    parser.add_argument("--data-dir", type=Path, help="Dossier séparé pour les galeries et les identifiants email")
     args = parser.parse_args()
+    if args.data_dir:
+        core.configure_data_directory(args.data_dir)
     file_handler = logging.FileHandler(ROOT / "desktop.log", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(file_handler)
@@ -676,7 +788,7 @@ def main():
     application = QApplication(sys.argv[:1])
     application.setApplicationName("Smart Camera")
     application.setOrganizationName("CameraAI")
-    window = CameraWindow(start_camera=not args.no_camera)
+    window = CameraWindow(start_camera=not args.no_camera, enable_control=not args.no_control, control_path=args.control_file)
     window.show()
     return application.exec()
 

@@ -11,11 +11,13 @@ a background thread so the Gradio UI starts instantly.
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -38,6 +40,7 @@ class AIProcessor:
     def __init__(self, *, autoload: bool = True) -> None:
         log.info("AIProcessor initializing...")
         self.device: str = "cpu"
+        self.gallery_root = Path(__file__).resolve().parent
 
         self.loaded_models: dict = {}
         self.segment_model = None
@@ -252,6 +255,7 @@ class AIProcessor:
             oldest = evictable[0]
             log.info("Evicting cached model to free memory: %s", oldest)
             del self.loaded_models[oldest]
+            gc.collect()
             if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -321,12 +325,13 @@ class AIProcessor:
 
     def set_face_recognition(self, enabled: bool) -> str:
         """Enable or disable face recognition overlay."""
-        self.face_recognition_enabled = enabled
         if enabled:
             fr = self._get_face_recognizer()
-            if fr is None:
+            if fr is None or not fr.is_ready():
                 return "❌ Face recognizer failed to load"
+            self.face_recognition_enabled = True
             return f"👤 Face recognition ON\n{fr.gallery_status()}"
+        self.face_recognition_enabled = False
         return "👤 Face recognition OFF"
 
     def set_face_threshold(self, val: float) -> None:
@@ -352,12 +357,13 @@ class AIProcessor:
     def start_learning(self, name: str, count: int = 5) -> str:
         """Start capturing face samples from the live stream."""
         try:
-            gallery_directory(os.path.join(os.path.dirname(__file__), "faces"), name)
+            gallery_directory(self.gallery_root / "faces", name)
         except ValueError as e:
             return f"❌ {e}"
-        self.learning_name = name
-        self.learning_count = count
-        self.learning_max = count
+        with self._infer_lock:
+            self.learning_name = name
+            self.learning_count = count
+            self.learning_max = count
         return f"📸 Learning {name} in next {count} frames..."
 
     def get_gallery_status(self) -> str:
@@ -384,12 +390,13 @@ class AIProcessor:
 
     def set_animal_recognition(self, enabled: bool) -> str:
         """Enable or disable animal recognition overlay."""
-        self.animal_recognition_enabled = enabled
         if enabled:
             ar = self._get_animal_recognizer()
             if ar is None:
                 return "❌ Animal recognizer failed to load"
+            self.animal_recognition_enabled = True
             return f"🐱 Animal recognition ON\n{ar.gallery_status()}"
+        self.animal_recognition_enabled = False
         return "🐱 Animal recognition OFF"
 
     def set_animal_threshold(self, val: float) -> None:
@@ -456,12 +463,13 @@ class AIProcessor:
     def start_learning_animal(self, name: str, count: int = 5) -> str:
         """Start capturing animal samples from the live stream."""
         try:
-            gallery_directory(os.path.join(os.path.dirname(__file__), "animals"), name)
+            gallery_directory(self.gallery_root / "animals", name)
         except ValueError as e:
             return f"❌ {e}"
-        self.animal_learning_name = name
-        self.animal_learning_count = count
-        self.animal_learning_max = count
+        with self._infer_lock:
+            self.animal_learning_name = name
+            self.animal_learning_count = count
+            self.animal_learning_max = count
         return f"📸 Learning Animal {name} in next {count} frames..."
 
     def get_animal_gallery_status(self) -> str:
@@ -718,7 +726,8 @@ class AIProcessor:
                         "Learning Person (%d/%d): %s",
                         progress, self.learning_max, res,
                     )
-                    self.learning_count -= 1
+                    if not res.startswith("❌"):
+                        self.learning_count -= 1
                     if self.learning_count == 0:
                         log.info("Learning person complete — rebuilding gallery")
                         threading.Thread(target=fr.build_gallery).start()
@@ -749,7 +758,8 @@ class AIProcessor:
                         "Learning Animal (%d/%d): %s",
                         progress, self.animal_learning_max, res,
                     )
-                    self.animal_learning_count -= 1
+                    if not res.startswith("❌"):
+                        self.animal_learning_count -= 1
                     if self.animal_learning_count == 0:
                         log.info("Learning animal complete — rebuilding gallery")
                         threading.Thread(target=ar.build_gallery).start()
@@ -964,14 +974,21 @@ class AIProcessor:
                     # the assistant; selecting it again reloads it on demand.
                     # The inference lock keeps the AI loop from using the
                     # model while it is being torn down.
-                    if self.model_type == "sam3":
-                        log.info("Releasing SAM3 GPU memory for the VLM")
-                        with self._infer_lock:
+                    with self._infer_lock:
+                        if self.model_type == "sam3":
+                            log.info("Releasing SAM3 GPU memory for the VLM")
                             self.loaded_models.pop(self.segment_model_name, None)
                             self.segment_model = None
                             self.segment_model_name = ""
                             self.model_type = "none"
-                        if torch is not None and torch.cuda.is_available():
+                        # Predictors can retain cyclic references to CUDA
+                        # tensors after cache eviction. Collect them before
+                        # allocating the assistant's weights.
+                        for name in list(self.loaded_models):
+                            if name != self.segment_model_name:
+                                del self.loaded_models[name]
+                        gc.collect()
+                        if torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
                     quantization_config = BitsAndBytesConfig(
@@ -1039,6 +1056,9 @@ class AIProcessor:
                     add_generation_prompt=True,
                 ).to(self._vlm_model.device)
                 input_len = inputs["input_ids"].shape[-1]
+                prefix = self._vlm_processor.decode(
+                    inputs["input_ids"][0], skip_special_tokens=False
+                )
                 with torch.inference_mode():
                     output_ids = self._vlm_model.generate(
                         **inputs,
@@ -1049,7 +1069,7 @@ class AIProcessor:
                 response = self._vlm_processor.decode(
                     output_ids[0][input_len:], skip_special_tokens=False
                 )
-            parsed = self._vlm_processor.parse_response(response)
+            parsed = self._vlm_processor.parse_response(response, prefix=prefix)
             if isinstance(parsed, str):
                 return parsed
             if isinstance(parsed, dict):
@@ -1074,7 +1094,7 @@ class AIProcessor:
                                 for part in content
                                 if isinstance(part, dict) and part.get("type") == "text"
                             )
-            return str(parsed)
+            return ""
         except Exception as e:
             log.error("VLM error: %s", e)
             return f"VLM Error: {e}"

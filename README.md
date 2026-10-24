@@ -14,8 +14,18 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows_launcher.ps1 -Short
 `SmartCamera.exe` stays beside `desktop.py` and uses the project's `.venv` (or the
 locally qualified `.venv-audit`). It is a launcher for the installed environment,
 not a standalone redistribution of Python, CUDA and model weights. The native
-application does not start a web server. See the [Windows guide](docs/windows.md)
+application has an authenticated loopback control API for the CLI, with no public
+web UI. See the [Windows guide](docs/windows.md)
 for controls, VPN profiles, troubleshooting and qualification limits.
+
+### LLM / JSON CLI
+
+`python camera_cli.py schema.get` describes every operation as JSON Schema.
+`app.start` starts the native app, `status.get` reads its live state, and
+commands such as `tracking.set`, `assistant.ask`, `camera.set` and `gallery.import`
+operate on that same instance. Long operations expose job IDs and polling.
+Credentials and network details remain local. See [the CLI guide](docs/cli.md)
+for all commands, automation examples, email send semantics and isolated tests.
 
 ## Features
 
@@ -36,6 +46,8 @@ for controls, VPN profiles, troubleshooting and qualification limits.
 | Windows Frontend | `desktop.py` | Native Qt Widgets, direct video, background commands |
 | Shared Runtime | `camera_core.py` | Capture, AI loop, galleries, alerts and VLM callbacks |
 | Desktop Boundaries | `desktop_backend.py` | Serialized commands and atomic connection settings |
+| JSON CLI | `camera_cli.py` / `control_api.py` | Discoverable commands, local authentication and asynchronous jobs |
+| App Commands | `application_commands.py` | Shared command handling and live state for LLM control |
 | AI Engine | `ai.py` | Model loading, inference, VLM (Gemma4-E2B) |
 | Face Recognizer | `face_recognizer.py` | RetinaFace + ArcFace ONNX pipeline |
 | Animal Recognizer | `animal_recognizer.py` | DINOv3-based pet re-identification |

@@ -28,6 +28,7 @@ def qt():
 
 @pytest.fixture
 def window(qt, monkeypatch):
+    monkeypatch.setattr(desktop_module, "cfg", Settings())
     monkeypatch.setattr(core, "_STOP", threading.Event())
     monkeypatch.setattr(core, "state", core.AppState())
     widget = CameraWindow(start_camera=False)
@@ -318,3 +319,17 @@ def test_window_waits_for_capture_to_release_before_exiting(window, qt, monkeypa
         qt.processEvents()
         time.sleep(.01)
     assert not window.isVisible()
+
+
+def test_tracking_checkbox_applies_without_another_button(window, qt, monkeypatch):
+    monkeypatch.setattr(core.ai, "tracking_enabled", False)
+    window.tracking.setChecked(True)
+    end = time.monotonic() + 2
+    while window.worker.busy and time.monotonic() < end:
+        qt.processEvents()
+        time.sleep(.01)
+    assert core.ai.tracking_enabled
+    window._metric_time = 0
+    window.refresh()
+    assert window.tracking.isChecked()
+    assert "Suivi désactivé" != window.tracking_status.text()

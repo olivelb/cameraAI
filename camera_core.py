@@ -153,7 +153,7 @@ def _save_email_settings(
     config_to_save = updated_config.copy()
     config_to_save["password"] = encrypted_password
 
-    fd, temporary = tempfile.mkstemp(prefix=".email-", suffix=".json", dir=_ROOT)
+    fd, temporary = tempfile.mkstemp(prefix=".email-", suffix=".json", dir=_CONFIG_FILE.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(config_to_save, f)
@@ -257,6 +257,36 @@ class AlertManager:
 alert_manager = AlertManager()
 
 
+def configure_data_directory(directory: Path) -> None:
+    """Isolate galleries and email state before any worker/model starts."""
+    global _CONFIG_FILE, _KEY_FILE, email_config
+    if _threads_started or ai._face_recognizer is not None or ai._animal_recognizer is not None:
+        raise RuntimeError("Choose the data directory before starting the application")
+    directory = directory.expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    import face_recognizer
+    import animal_recognizer
+
+    face_recognizer.FACES_DIR = directory / "faces"
+    face_recognizer.GALLERY_FILE = directory / "faces" / "gallery.npz"
+    animal_recognizer.ANIMALS_DIR = directory / "animals"
+    animal_recognizer.GALLERY_FILE = directory / "animals" / "gallery.npz"
+    ai.gallery_root = directory
+    _CONFIG_FILE = directory / "email_config.json"
+    _KEY_FILE = directory / ".secret.key"
+    email_config = {"enabled": False, "sender": "", "receiver": "", "password": ""}
+    if _CONFIG_FILE.exists():
+        saved = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict):
+            raise ValueError("Invalid email settings in data directory")
+        password = saved.get("password", "")
+        if password:
+            if not _KEY_FILE.exists():
+                raise ValueError("Email encryption key is missing from data directory")
+            password = _get_cipher().decrypt(password.encode()).decode()
+        email_config.update(sender=saved.get("sender", ""), receiver=saved.get("receiver", ""), password=password)
+
+
 # ── WebSocket client ─────────────────────────────────────────────────────────
 
 def _send_ws(data: dict, label: str = "") -> str:
@@ -337,6 +367,8 @@ class AppState:
         self.last_res: tuple[int, int] = (0, 0)
         self.frame_id: int = 0
         self.processed_id: int = -1
+        self.track_ids: list[int] = []
+        self.detected_classes: list[int] = []
         self.last_info: str = "Model loading..."
         self.ai_enabled = True
         self.last_frame_time = 0.0
@@ -440,10 +472,11 @@ def ai_loop() -> None:
                 continue
 
             if ai.tracking_enabled:
-                processed, info, detected_classes, _ = ai.track_frame(
+                processed, info, detected_classes, track_ids = ai.track_frame(
                     frame, conf=state.conf
                 )
             else:
+                track_ids = []
                 processed, info, detected_classes = ai.process_frame(
                     frame, conf=state.conf
                 )
@@ -461,6 +494,8 @@ def ai_loop() -> None:
                 state.last_processed = processed
                 state.last_info = info
                 state.processed_id = current_id
+                state.track_ids = track_ids
+                state.detected_classes = detected_classes
                 state.last_processed_time = time.monotonic()
 
         except Exception as e:
@@ -550,6 +585,17 @@ def change_tracker(tracker_name: str) -> None:
     """Switch tracker algorithm (BoT-SORT or ByteTrack)."""
     ai.set_tracker(tracker_name.lower().replace("-", ""))
     ui_log(f"🔀 Tracker switched to: {tracker_name}")
+
+
+def configure_tracking(enabled: bool, tracker: str) -> str:
+    """Apply tracking as one operation shared by the GUI and automation."""
+    name = tracker.lower().replace("-", "").removesuffix(".yaml")
+    if name not in {"botsort", "bytetrack"}:
+        raise ValueError("Unknown tracker")
+    if ai.tracker != name + ".yaml":
+        ai.set_tracker(name)
+    toggle_tracking(enabled)
+    return f"Suivi {'activé' if enabled else 'désactivé'} — {name}"
 
 
 def toggle_face_recognition(enabled: bool) -> str:

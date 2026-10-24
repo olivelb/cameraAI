@@ -21,6 +21,11 @@ a pas de `.venv`. Il doit rester à côté de `desktop.py` : déplacer seulement
 l’exécutable ne transfère pas Python, les bibliothèques CUDA ni les modèles.
 Le raccourci Bureau peut être déplacé normalement.
 
+Le contrôle par un LLM est disponible via le [CLI JSON](cli.md). Les commandes
+pilotent cette même fenêtre, avec un canal local authentifié. La case de suivi
+s’applique immédiatement ; l’état affiché reflète le moteur actif. L’assistant
+et le CLI partagent la même conversation et n’y ajoutent pas les erreurs du modèle.
+
 Alternative : `python desktop.py`. Pour examiner seulement l’interface, sans
 caméra, téléchargement ou chargement IA : `python desktop.py --no-camera`.
 

@@ -50,6 +50,8 @@ config.yaml
 .connection-*.yaml
 .profile-*.yaml
 .email-*.json
+.camera-control.json
+.control-*.json
 
 # ── AI assistant context (local only) ───────────────────────────────────────
 GEMINI.md

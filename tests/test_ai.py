@@ -87,3 +87,75 @@ def test_tensorrt_segmentation_task_is_explicit(monkeypatch):
     monkeypatch.setattr(module, "YOLO", lambda name, *, task: loaded.append((name, task)) or object())
     processor.load_segmentation_model("yolo26n-seg.engine", "Segmentation")
     assert loaded == [("yolo26n-seg.engine", "segment")]
+
+
+def test_vlm_parser_receives_prompt_prefix_and_returns_only_answer(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    class Batch(dict):
+        def to(self, device):
+            return self
+
+    class Processor:
+        def apply_chat_template(self, messages, **kwargs):
+            return Batch(input_ids=np.array([[101, 102, 103]]))
+
+        def decode(self, tokens, **kwargs):
+            return "<assistant><think>" if len(tokens) == 3 else "generated response"
+
+        def parse_response(self, response, *, prefix):
+            assert prefix == "<assistant><think>"
+            assert response == "generated response"
+            return {"role": "assistant", "thinking": "internal", "content": [{"type": "text", "text": "A room."}]}
+
+    processor = module.AIProcessor(autoload=False)
+    processor.device = "cuda"
+    processor._vlm_processor = Processor()
+    processor._vlm_model = SimpleNamespace(device="cuda", generate=lambda **kw: np.array([[101, 102, 103, 104]]))
+    monkeypatch.setattr(module, "torch", SimpleNamespace(inference_mode=nullcontext))
+    assert processor.describe_scene(None, "Describe") == "A room."
+
+
+def test_failed_learning_capture_does_not_claim_a_sample(monkeypatch):
+    from types import SimpleNamespace
+
+    processor = module.AIProcessor(autoload=False)
+    processor.learning_count = processor.learning_max = 1
+    recognizer = SimpleNamespace(capture_face=lambda *args: "❌ No face")
+    monkeypatch.setattr(processor, "_get_face_recognizer", lambda: recognizer)
+    def tensor(array):
+        return SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: np.array(array)))
+    result = SimpleNamespace(boxes=SimpleNamespace(xyxy=tensor([[0, 0, 10, 10]]),
+                                                  cls=tensor([module.cfg.ai.person_class])), masks=None)
+    processor._run_learning_logic([result], np.zeros((10, 10, 3), np.uint8))
+    assert processor.learning_count == 1
+
+
+def test_assistant_reclaims_inactive_cyclic_models_before_allocating_weights(monkeypatch):
+    import sys
+    import weakref
+    from types import SimpleNamespace
+
+    class CachedModel:
+        pass
+
+    processor = module.AIProcessor(autoload=False)
+    processor.device = "cuda"
+    processor.segment_model_name = "active.engine"
+    processor.segment_model = object()
+    inactive = CachedModel()
+    inactive.cycle = inactive
+    released = weakref.ref(inactive)
+    processor.loaded_models = {"active.engine": processor.segment_model, "sam3.pt": inactive}
+    del inactive
+
+    def allocate(**kwargs):
+        assert released() is None
+        assert processor.segment_model is processor.loaded_models["active.engine"]
+        raise RuntimeError("Fixture stops before weight loading")
+
+    monkeypatch.setattr(module, "torch", SimpleNamespace(bfloat16="bf16", cuda=SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(
+        AutoModelForMultimodalLM=object(), AutoProcessor=object(), BitsAndBytesConfig=allocate))
+    assert "Fixture stops before weight loading" in processor.describe_scene(None)

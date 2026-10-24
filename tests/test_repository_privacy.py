@@ -62,8 +62,8 @@ def test_camera_defaults_are_explicit_placeholders():
 
 
 def test_private_settings_and_diagnostics_are_not_published():
-    forbidden = {"config.yaml", "email_config.json", ".secret.key"}
+    forbidden = {"config.yaml", "email_config.json", ".secret.key", ".camera-control.json"}
     violations = [name for name, _ in published_text_files()
                   if Path(name).name in forbidden or name.startswith(".audit-tmp/")
-                  or Path(name).name.startswith((".connection-", ".profile-", ".email-"))]
+                  or Path(name).name.startswith((".connection-", ".profile-", ".email-", ".control-"))]
     assert not violations, f"Private files are published: {violations}"
