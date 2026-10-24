@@ -287,3 +287,25 @@ def test_cli_cold_start_and_shutdown(tmp_path):
     while descriptor.exists() and time.monotonic() < deadline:
         time.sleep(.05)
     assert not descriptor.exists()
+
+
+def test_control_start_never_replaces_an_unrelated_existing_file(tmp_path):
+    target = tmp_path / "settings.json"
+    original = b'{"setting":"preserve"}'
+    target.write_bytes(original)
+    with pytest.raises(RuntimeError, match="not a valid descriptor"):
+        ControlServer(CommandBus(lambda: {}), target)
+    assert target.read_bytes() == original
+
+
+def test_control_start_recovers_a_valid_stale_descriptor(tmp_path):
+    target = tmp_path / ".camera-control.json"
+    first = ControlServer(CommandBus(lambda: {}), target)
+    stale = target.read_bytes()
+    first.close()
+    target.write_bytes(stale)
+    second = ControlServer(CommandBus(lambda: {}), target)
+    try:
+        assert ControlClient(target).get("/status")["ok"]
+    finally:
+        second.close()

@@ -299,8 +299,14 @@ class ControlServer:
 
         if self.path.exists():
             try:
-                ControlClient(self.path).get("/status")
-            except (OSError, ValueError, error.URLError):
+                previous = ControlClient(self.path)
+            except (OSError, ValueError):
+                raise RuntimeError("Existing control file is not a valid descriptor; choose another path") from None
+            try:
+                previous.get("/status")
+            except error.HTTPError:
+                raise RuntimeError("Existing control endpoint rejected authentication; choose another path") from None
+            except (OSError, error.URLError):
                 self.path.unlink(missing_ok=True)
             else:
                 raise RuntimeError("A local control server is already running")
@@ -323,7 +329,8 @@ class ControlServer:
         self.server.shutdown()
         self.server.server_close()
         try:
-            if json.loads(self.path.read_text(encoding="utf-8")).get("token") == self.token:
+            descriptor = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(descriptor, dict) and descriptor.get("token") == self.token:
                 self.path.unlink(missing_ok=True)
         except (OSError, ValueError):
             pass
